@@ -26,16 +26,20 @@ Hasta el momento, el entorno de simulación cuenta con las siguientes caracterí
 
 *(Capturas del entorno de simulación y la visualización de datos)*
 
-![Vista General del Laberinto](images/laberinto_general.png)
+<img src="images/laberinto_general.png" width="400" alt="Vista del laberinto">
+
 *Vista superior del laberinto importado desde SolidWorks con sus materiales aplicados.*
 
-![Robot en el Laberinto](images/robot_spawn.png)
+<img src="images/robot_spawn.png" width="400" alt="Robot en el laberinto">
+
 *El robot Rosmaster X3 posicionado en las coordenadas de inicio dentro de la simulación.*
 
-![Visualización LiDAR en RViz2](images/rviz_lidar.png)
+<img src="images/rviz_lidar.png" width="400" alt="Visualización LiDAR en RViz2">
+
 *Lectura de las paredes del laberinto utilizando el sensor LiDAR del Rosmaster X3 en RViz2.*
 
-![Cámara del Dron](images/dron_camara.png)
+<img src="images/dron_camara.png" width="400" alt="Cámara del Dron">
+
 *Feed de video en tiempo real desde la perspectiva de la cámara del dron.*
 
 ---
@@ -43,15 +47,23 @@ Hasta el momento, el entorno de simulación cuenta con las siguientes caracterí
 ## Cómo ejecutar la simulación
 
 **1. Dar permisos de interfaz gráfica y levantar el contenedor:**
+```
 xhost +local:root
 docker compose up -d --build
+```
 
 **2. Entrar a la terminal del contenedor:**
+```
 docker exec -it entorno_robotica bash
+```
 
 **3. Compilar el espacio de trabajo (Dentro del contenedor):**
+```
 colcon build --packages-select mi_proyecto_sim
 source install/setup.bash
+```
 
 **4. Lanzar Gazebo y el Robot:**
+```
 ros2 launch mi_proyecto_sim launch_sim.launch.py
+```
