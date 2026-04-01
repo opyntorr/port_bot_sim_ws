@@ -1,0 +1,32 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <model name="marcador_aruco">
+    <static>true</static>
+    <link name="link">
+      <visual name="visual">
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>0.18 0.18</size>
+          </plane>
+        </geometry>
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular> <pbr>
+            <metal>
+              <albedo_map>materials/textures/aruco2.png</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+      <collision name="collision">
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>0.18 0.18</size>
+          </plane>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

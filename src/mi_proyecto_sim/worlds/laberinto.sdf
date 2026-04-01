@@ -1,0 +1,96 @@
+<?xml version="1.0"?>
+<sdf version="1.8">
+  <world name="laberinto_world">
+
+    <plugin filename="libignition-gazebo-physics-system.so"
+      name="ignition::gazebo::systems::Physics"></plugin>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so"
+      name="ignition::gazebo::systems::SceneBroadcaster"></plugin>
+    <plugin filename="libignition-gazebo-user-commands-system.so"
+      name="ignition::gazebo::systems::UserCommands"></plugin>
+    <plugin filename="libignition-gazebo-sensors-system.so"
+      name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <scene>
+      <ambient>1.0 1.0 1.0 1.0</ambient>
+      <background>0.8 0.8 0.8 1.0</background>
+      <grid>true</grid>
+    </scene>
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <include>
+      <uri>file://dronCamara.sdf</uri>
+      <pose>0 0 3.5 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>aruco_1</name>
+      <uri>file://marcador_aruco/marcador_aruco1.sdf</uri>
+      <pose>1.5 1.5 0.01 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>aruco_2</name>
+      <uri>file://marcador_aruco/marcador_aruco2.sdf</uri>
+      <pose>1.5 -1.5 0.01 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>aruco_3</name>
+      <uri>file://marcador_aruco/marcador_aruco3.sdf</uri>
+      <pose>-1.5 -1.5 0.01 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>aruco_4</name>
+      <uri>file://marcador_aruco/marcador_aruco4.sdf</uri>
+      <pose>-1.5 1.5 0.01 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://laberinto_real</uri>
+      <pose>-1.9 1.9 0 1.5708 0 0</pose>
+    </include>
+
+  </world>
+</sdf>

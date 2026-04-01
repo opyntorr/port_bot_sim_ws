@@ -1,0 +1,48 @@
+<?xml version="1.0" ?>
+<sdf version="1.8">
+  <model name="dron_camara">
+    <static>true</static>
+    <link name="base_link">
+      
+      <visual name="visual">
+        <geometry>
+          <box><size>0.1 0.1 0.04</size></box>
+        </geometry>
+        <material>
+          <ambient>0 0 1 1</ambient>
+          <diffuse>0 0 1 1</diffuse>
+        </material>
+      </visual>
+
+      <sensor name="camera_uav" type="camera">
+        <pose>0 0 -0.05 0 1.5707 0</pose> 
+        <update_rate>15</update_rate> <visualize>true</visualize>
+        <topic>uav/camera/image</topic>
+        <camera>
+          <horizontal_fov>1.8</horizontal_fov> <image>
+            <width>1280</width> <height>720</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>100</far>
+          </clip>
+          
+          <distortion>
+            <k1>-0.45</k1>      <k2>0.15</k2>       
+            <k3>0.001</k3>      
+            <p1>0.02</p1>       <p2>0.02</p2>
+            <center>0.5 0.5</center> 
+          </distortion>
+
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.08</stddev> </noise>
+          
+          </camera>
+      </sensor>
+
+    </link>
+  </model>
+</sdf>

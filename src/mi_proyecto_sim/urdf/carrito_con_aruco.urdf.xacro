@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<robot name="rosmaster_x3_aruco" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:include filename="$(find yahboom_rosmaster_description)/urdf/robots/rosmaster_x3.urdf.xacro" />
+
+    <link name="techo_aruco_link">
+        <visual>
+            <geometry>
+                <box size="0.15 0.15 0.001"/>
+            </geometry>
+        </visual>
+        <inertial>
+            <mass value="0.1"/> 
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+        </inertial>
+    </link>
+
+    <gazebo reference="techo_aruco_link">
+        <visual>
+            <material>
+                <diffuse>1 1 1 1</diffuse>
+                <pbr>
+                    <metal>
+                        <albedo_map>file://$(find mi_proyecto_sim)/models/marcador_aruco/materials/textures/aruco5.png</albedo_map>
+                    </metal>
+                </pbr>
+            </material>
+        </visual>
+    </gazebo>
+
+    <joint name="aruco_base_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="techo_aruco_link"/>
+        <origin xyz="0 0 0.18" rpy="0 0 0"/> 
+    </joint>
+
+    <gazebo>
+        <plugin filename="libignition-gazebo-mecanum-drive-system.so" name="ignition::gazebo::systems::MecanumDrive">
+            <front_left_joint>front_left_wheel_joint</front_left_joint>
+            <front_right_joint>front_right_wheel_joint</front_right_joint>
+            <back_left_joint>back_left_wheel_joint</back_left_joint>
+            <back_right_joint>back_right_wheel_joint</back_right_joint>
+            <wheel_separation>0.149</wheel_separation> 
+            <wheelbase>0.16</wheelbase>
+            <wheel_radius>0.0325</wheel_radius>
+            <topic>/cmd_vel</topic>
+        </plugin>
+
+        <plugin filename="libignition-gazebo-velocity-control-system.so" name="ignition::gazebo::systems::VelocityControl">
+            <topic>/cmd_vel</topic>
+        </plugin>
+    </gazebo>
+
+</robot>
