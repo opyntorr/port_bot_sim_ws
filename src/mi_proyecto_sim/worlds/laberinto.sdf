@@ -60,31 +60,31 @@
 
     <include>
       <uri>file://dronCamara.sdf</uri>
-      <pose>0 0 3.5 0 0 0</pose>
+      <pose>0 0 4 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_1</name>
       <uri>file://marcador_aruco/marcador_aruco1.sdf</uri>
-      <pose>1.5 1.5 0.01 0 0 0</pose>
+      <pose>2 2 0.01 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_2</name>
       <uri>file://marcador_aruco/marcador_aruco2.sdf</uri>
-      <pose>1.5 -1.5 0.01 0 0 0</pose>
+      <pose>2 -2 0.01 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_3</name>
       <uri>file://marcador_aruco/marcador_aruco3.sdf</uri>
-      <pose>-1.5 -1.5 0.01 0 0 0</pose>
+      <pose>-2 -2 0.01 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_4</name>
       <uri>file://marcador_aruco/marcador_aruco4.sdf</uri>
-      <pose>-1.5 1.5 0.01 0 0 0</pose>
+      <pose>-2 2 0.01 0 0 0</pose>
     </include>
 
     <include>
