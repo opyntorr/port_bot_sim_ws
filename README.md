@@ -1,4 +1,4 @@
-# 🤖 Simulación de AGV/UAV con Yahboom Rosmaster X3 en Gazebo
+# Simulación de AGV/UAV con Yahboom Rosmaster X3 en Gazebo
 
 Este repositorio contiene el entorno de simulación basado en ROS 2 (Humble) y Gazebo (Ignition) para el desarrollo de algoritmos de navegación, SLAM y visión artificial. 
 
