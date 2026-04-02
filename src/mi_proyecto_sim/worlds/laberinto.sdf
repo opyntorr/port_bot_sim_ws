@@ -66,30 +66,35 @@
     <include>
       <name>aruco_1</name>
       <uri>file://marcador_aruco/marcador_aruco1.sdf</uri>
-      <pose>2 2 0.01 0 0 0</pose>
+      <pose>2.2 2.2 0.01 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_2</name>
       <uri>file://marcador_aruco/marcador_aruco2.sdf</uri>
-      <pose>2 -2 0.01 0 0 0</pose>
+      <pose>2.2 -2.2 0.01 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_3</name>
       <uri>file://marcador_aruco/marcador_aruco3.sdf</uri>
-      <pose>-2 -2 0.01 0 0 0</pose>
+      <pose>-2.2 -2.2 0.01 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_4</name>
       <uri>file://marcador_aruco/marcador_aruco4.sdf</uri>
-      <pose>-2 2 0.01 0 0 0</pose>
+      <pose>-2.2 2.2 0.01 0 0 0</pose>
     </include>
 
     <include>
       <uri>model://laberinto_real</uri>
       <pose>-1.9 1.9 0 1.5708 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://netanyaju</uri>
+      <pose>1.2 -0.8 0.05 3.14159 0 0</pose> 
     </include>
 
   </world>

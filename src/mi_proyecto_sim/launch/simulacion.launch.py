@@ -5,6 +5,7 @@ from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnviron
 from launch_ros.actions import Node
 from launch.substitutions import Command
 from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.parameter_descriptions import ParameterFile
 
 def generate_launch_description():
     pkg_sim = get_package_share_directory('mi_proyecto_sim')
@@ -59,6 +60,15 @@ def generate_launch_description():
         output='screen'
     )
 
+    # 4b. NUEVO: Lanzar el visor de imágenes para el Carrito
+    visor_carrito = Node(
+        package='rqt_image_view',
+        executable='rqt_image_view',
+        name='image_view_carrito', # Nombre único
+        arguments=['/cam_1/image'], # El tópico de la cámara de tu carrito
+        output='screen'
+    )
+
     # =========================================================
     # NODOS PARA EL CARRITO ROSMASTER
     # =========================================================
@@ -102,6 +112,30 @@ def generate_launch_description():
         output='screen'
     )
 
+    joy_node = Node(
+        package='joy',
+        executable='joy_node',
+        name='joy_node',
+        output='screen'
+    )
+
+    teleop = Node(
+        package='teleop_twist_joy',
+        executable='teleop_node',
+        name='teleop_twist_joy',
+        parameters=[
+            ParameterFile(
+                os.path.join(pkg_sim, 'config', 'xbox_mecanum.yaml'),
+                allow_substs=True
+            )
+        ],
+        remappings=[
+            ('joy', '/joy'),
+            ('cmd_vel', '/cmd_vel')
+        ],
+        output='screen'
+    )
+
     # Empaquetar y lanzar todo simultáneamente
     return LaunchDescription([
         set_env,
@@ -109,7 +143,10 @@ def generate_launch_description():
         gazebo,
         puente,
         visor,
+        visor_carrito,
         robot_state_publisher,
         spawner,
-        rviz_node
+        rviz_node,
+        joy_node,
+        teleop
     ])

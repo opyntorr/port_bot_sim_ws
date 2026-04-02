@@ -6,7 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     ros-humble-ros-gz \
     ros-humble-vision-msgs \
+    ros-humble-robot-localization \
     ros-humble-xacro \
+    ros-humble-joy \
+    ros-humble-teleop-twist-joy \
+    ros-humble-urdf-tutorial \
     python3-pip \
     python3-opencv \
     nano \

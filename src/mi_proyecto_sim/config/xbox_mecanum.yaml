@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    # Botón de seguridad
+    enable_button: 7
+    require_enable_button: false
+    
+    # Ejes Lineales (PALANCA IZQUIERDA)
+    axis_linear:
+      x: 1    # Adelante/Atrás 
+      y: 0    # Strafe 
+      
+    scale_linear:
+      x: 0.3  # Si también quieres que avance más rápido, sube este número
+      y: 0.3
+
+    # Ejes Angulares (PALANCA DERECHA)
+    axis_angular:
+      yaw: 2  # ¡Debe ser YAW para girar sobre el piso!
+      
+    scale_angular:
+      yaw: 3.0 # ¡Aquí está la magia! Sube este valor para girar más rápido

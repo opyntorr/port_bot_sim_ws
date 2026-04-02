@@ -31,10 +31,11 @@
     <joint name="aruco_base_joint" type="fixed">
         <parent link="base_link"/>
         <child link="techo_aruco_link"/>
-        <origin xyz="0 0 0.18" rpy="0 0 0"/> 
+        <origin xyz="0 0 0.19" rpy="0 0 0"/> 
     </joint>
 
     <gazebo>
+        <!--
         <plugin filename="libignition-gazebo-mecanum-drive-system.so" name="ignition::gazebo::systems::MecanumDrive">
             <front_left_joint>front_left_wheel_joint</front_left_joint>
             <front_right_joint>front_right_wheel_joint</front_right_joint>
@@ -45,10 +46,12 @@
             <wheel_radius>0.0325</wheel_radius>
             <topic>/cmd_vel</topic>
         </plugin>
+        -->
 
         <plugin filename="libignition-gazebo-velocity-control-system.so" name="ignition::gazebo::systems::VelocityControl">
             <topic>/cmd_vel</topic>
         </plugin>
+        
     </gazebo>
 
 </robot>
