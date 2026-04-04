@@ -14,7 +14,7 @@
           <diffuse>1 1 1 1</diffuse>
           <specular>0.1 0.1 0.1 1</specular> <pbr>
             <metal>
-              <albedo_map>materials/textures/aruco4.png</albedo_map>
+              <albedo_map>materials/textures/aruco5.png</albedo_map>
             </metal>
           </pbr>
         </material>

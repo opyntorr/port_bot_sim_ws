@@ -1,0 +1,113 @@
+import cv2
+import numpy as np
+import heapq
+
+class Nodo:
+    def __init__(self, posicion, padre=None):
+        self.posicion = posicion
+        self.padre = padre
+        self.g = 0 # Costo desde el inicio
+        self.h = 0 # Heurística (distancia a la meta)
+        self.f = 0 # Costo total (g + h)
+
+    def __lt__(self, otro):
+        return self.f < otro.f
+
+def a_estrella(mapa_binario, inicio, meta):
+    """
+    mapa_binario: numpy array donde 255 es libre y 0 es obstáculo.
+    inicio/meta: tuplas (x, y) en píxeles.
+    """
+    lista_abierta = []
+    lista_cerrada = set()
+    
+    nodo_inicio = Nodo(inicio)
+    nodo_meta = Nodo(meta)
+    
+    heapq.heappush(lista_abierta, nodo_inicio)
+    
+    # Movimientos permitidos (8 direcciones: Arriba, Abajo, Izq, Der, y Diagonales)
+    movimientos = [(0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    alto, ancho = mapa_binario.shape
+    
+    while lista_abierta:
+        # Obtener el nodo con el menor costo total 'f'
+        nodo_actual = heapq.heappop(lista_abierta)
+        lista_cerrada.add(nodo_actual.posicion)
+        
+        # ¿Llegamos a la meta?
+        # Damos un margen de error de 5 píxeles (5 cm) por si la meta está muy pegada a la pared
+        if abs(nodo_actual.posicion[0] - nodo_meta.posicion[0]) < 5 and \
+           abs(nodo_actual.posicion[1] - nodo_meta.posicion[1]) < 5:
+            ruta = []
+            actual = nodo_actual
+            while actual is not None:
+                ruta.append(actual.posicion)
+                actual = actual.padre
+            return ruta[::-1] # Devolver la ruta invertida (de inicio a fin)
+            
+        # Explorar vecinos
+        for mov in movimientos:
+            pos_vecino = (nodo_actual.posicion[0] + mov[0], nodo_actual.posicion[1] + mov[1])
+            
+            # Verificar límites del mapa
+            if pos_vecino[0] < 0 or pos_vecino[0] >= ancho or pos_vecino[1] < 0 or pos_vecino[1] >= alto:
+                continue
+                
+            # Verificar si es pared (0 = negro/obstáculo)
+            if mapa_binario[pos_vecino[1], pos_vecino[0]] == 0:
+                continue
+                
+            if pos_vecino in lista_cerrada:
+                continue
+                
+            # Crear nodo vecino
+            nodo_vecino = Nodo(pos_vecino, nodo_actual)
+            # Costo g: +1 si es recto, +1.414 si es diagonal
+            costo_movimiento = 1.414 if mov[0] != 0 and mov[1] != 0 else 1.0
+            nodo_vecino.g = nodo_actual.g + costo_movimiento
+            
+            # Heurística h (Distancia Euclidiana a la meta)
+            nodo_vecino.h = ((pos_vecino[0] - nodo_meta.posicion[0]) ** 2 + 
+                             (pos_vecino[1] - nodo_meta.posicion[1]) ** 2) ** 0.5
+            nodo_vecino.f = nodo_vecino.g + nodo_vecino.h
+            
+            # Verificar si ya está en la lista abierta con menor costo
+            if any(n for n in lista_abierta if n.posicion == pos_vecino and n.g <= nodo_vecino.g):
+                continue
+                
+            heapq.heappush(lista_abierta, nodo_vecino)
+            
+    return None # No se encontró ruta
+
+# --- PRUEBA RÁPIDA ---
+if __name__ == '__main__':
+    print("Cargando mapa...")
+    # Cargar la imagen que generaste
+    mapa = cv2.imread('/ros2_ws/mapa_laberinto.pgm', cv2.IMREAD_GRAYSCALE)
+    
+    # ⚠️ IMPORTANTE: El robot tiene volumen. Para que A* no pegue la ruta a las paredes,
+    # "inflamos" las paredes (Erosión del espacio libre) unos 15 píxeles (15 cm).
+    kernel = np.ones((15, 15), np.uint8)
+    mapa_inflado = cv2.erode(mapa, kernel, iterations=1)
+    
+    # Supongamos que estas son las posiciones en PÍXELES (pronto las sacaremos del TF automáticamente)
+    # Por ahora, ponemos unas de prueba. (Puedes cambiarlas viendo tu imagen)
+    inicio_px = (100, 350) 
+    meta_px = (350, 100)
+    
+    print("Calculando ruta con A*...")
+    ruta = a_estrella(mapa_inflado, inicio_px, meta_px)
+    
+    if ruta:
+        print("¡Ruta encontrada!")
+        # Dibujar la ruta en rojo sobre una copia a color del mapa original
+        mapa_color = cv2.cvtColor(mapa, cv2.COLOR_GRAY2BGR)
+        for (x, y) in ruta:
+            cv2.circle(mapa_color, (x, y), 2, (0, 0, 255), -1) # Puntos rojos
+            
+        cv2.imwrite('/ros2_ws/ruta_calculada.png', mapa_color)
+        print("Imagen guardada como ruta_calculada.png")
+    else:
+        print("No se encontró una ruta posible.")
