@@ -21,7 +21,7 @@
                 <diffuse>1 1 1 1</diffuse>
                 <pbr>
                     <metal>
-                        <albedo_map>file://$(find mi_proyecto_sim)/models/marcador_aruco/materials/textures/aruco5.png</albedo_map>
+                        <albedo_map>file://$(find mi_proyecto_sim)/models/marcador_aruco/materials/textures/aruco4.png</albedo_map>
                     </metal>
                 </pbr>
             </material>

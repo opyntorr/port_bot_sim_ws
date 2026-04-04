@@ -37,27 +37,21 @@ def generate_launch_description():
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
-            # Dron (El que ya tenías)
+            '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock', # <--- ¡EL RELOJ!
             '/uav/camera/image@sensor_msgs/msg/Image[ignition.msgs.Image',
-            
-            # Llantas del Carrito
             '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
-            
-            # LiDAR del Carrito (De Gazebo a ROS 2)
             '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
-            
-            # Cámara del Carrito (De Gazebo a ROS 2)
             '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image'
         ],
         output='screen'
     )
 
-    # 4. Lanzar el visor de imágenes (rqt)
-    visor = Node(
+    # Visor de la cámara del dron (Ahora sintonizado al canal con ArUco)
+    visor_dron = Node(
         package='rqt_image_view',
         executable='rqt_image_view',
-        arguments=['/uav/camera/image'],
-        output='screen'
+        name='visor_dron',
+        arguments=['/uav/camera/aruco_3d']  # <--- Esta es la clave mágica
     )
 
     # 4b. NUEVO: Lanzar el visor de imágenes para el Carrito
@@ -78,7 +72,7 @@ def generate_launch_description():
         package='robot_state_publisher',
         executable='robot_state_publisher',
         parameters=[{
-            # Añadimos use_gazebo:=true para cargar las llantas Mecanum en el simulador
+            'use_sim_time': True,  # <--- Sincronizado
             'robot_description': ParameterValue(Command(['xacro ', xacro_file, ' use_gazebo:=true']), value_type=str)
         }]
     )
@@ -98,18 +92,18 @@ def generate_launch_description():
             
             # --- ORIENTACIÓN (Añadir esto) ---
             '-Y', '0' # Orientación (Yaw) en radianes. 
-                           # 1.5708 rad = 90 grados
         ],
         output='screen'
     )
 
-    # 7. Lanzar RViz2 con la configuración guardada
+    # Visor RViz con configuración guardada
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', rviz_config], # El parámetro -d le dice qué archivo cargar
-        output='screen'
+        output='screen',
+        arguments=['-d', '/ros2_ws/mi_config.rviz'],
+        parameters=[{'use_sim_time': True}]  # <--- Sincronizado
     )
 
     joy_node = Node(
@@ -136,17 +130,62 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Nodo del Cerebro 3D (Detector ArUco y TF2)
+    detector_aruco_node = Node(
+        package='mi_proyecto_sim',
+        executable='detector_aruco.py',
+        name='detector_aruco',
+        output='screen',
+        parameters=[{'use_sim_time': True}]  # <--- ¡DESCOMENTADO! Fundamental para las coordenadas 3D
+    )
+
+    # Nodo para conectar el ArUco con el modelo 3D del carrito
+    tf_bridge = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='aruco_to_robot_bridge',
+        arguments=['0', '0', '0', '0', '0', '0', 'carrito_aruco', 'base_footprint']
+    )
+
+    # 6. Servidor de Mapas (Nav2 Map Server)
+    map_server_node = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server',
+        output='screen',
+        parameters=[{
+            'yaml_filename': '/ros2_ws/mapa_laberinto.yaml',
+            'use_sim_time': True  # <--- ¡DESCOMENTADO! Sincronizado con Gazebo
+        }]
+    )
+
+    # 7. Administrador de Ciclo de Vida (Para despertar al Map Server)
+    lifecycle_manager_node = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_map',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True, # <--- ¡DESCOMENTADO!
+            'autostart': True,
+            'node_names': ['map_server']
+        }]
+    )
+
     # Empaquetar y lanzar todo simultáneamente
     return LaunchDescription([
         set_env,
         plugin_env,
         gazebo,
         puente,
-        visor,
+        visor_dron,
         visor_carrito,
         robot_state_publisher,
         spawner,
         rviz_node,
         joy_node,
-        teleop
+        teleop,
+        detector_aruco_node,
+        map_server_node,
+        lifecycle_manager_node
     ])

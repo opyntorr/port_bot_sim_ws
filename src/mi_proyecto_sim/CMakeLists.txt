@@ -22,6 +22,12 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+install(PROGRAMS
+  mi_proyecto_sim/detector_aruco.py
+  mi_proyecto_sim/generador_mapa.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY
   models
   worlds
