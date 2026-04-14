@@ -91,7 +91,7 @@ def generate_launch_description():
             '-z', '0.1',  # Altura inicial
             
             # --- ORIENTACIÓN (Añadir esto) ---
-            '-Y', '0' # Orientación (Yaw) en radianes. 
+            '-Y', '-1.5708' # Orientación (Yaw) en radianes. 
         ],
         output='screen'
     )
@@ -172,6 +172,27 @@ def generate_launch_description():
         }]
     )
 
+    # Nodo de Planificación de Ruta
+    planificador_node = Node(
+        package='mi_proyecto_sim',
+        executable='planificador_astar.py',
+        name='planificador_astar',
+        output='screen',
+        parameters=[{'use_sim_time': True}]
+    )
+
+    # Nodo de Planificación RRT
+    planificador_rrt_node = Node(
+        package='mi_proyecto_sim',
+        executable='planificador_rrt',
+        name='planificador_rrt',
+        arguments=['/ros2_ws/mapa_laberinto.pgm'],
+        output='screen',
+        parameters=[{'use_sim_time': True}]
+    )
+    
+    # ... y recuerda añadir 'planificador_node' al final en el LaunchDescription
+
     # Empaquetar y lanzar todo simultáneamente
     return LaunchDescription([
         set_env,
@@ -187,5 +208,7 @@ def generate_launch_description():
         teleop,
         detector_aruco_node,
         map_server_node,
-        lifecycle_manager_node
+        lifecycle_manager_node,
+        planificador_node,
+        planificador_rrt_node
     ])
