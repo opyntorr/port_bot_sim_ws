@@ -9,6 +9,13 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ros_gz_bridge REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -22,9 +29,21 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+add_executable(planificador_rrt src/planificador_rrt.cpp)
+target_include_directories(planificador_rrt PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(planificador_rrt ${OpenCV_LIBS})
+ament_target_dependencies(planificador_rrt rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
+
+install(TARGETS
+  planificador_rrt
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(PROGRAMS
   mi_proyecto_sim/detector_aruco.py
   mi_proyecto_sim/generador_mapa.py
+  mi_proyecto_sim/planificador_astar.py
+  mi_proyecto_sim/control_trayectoria.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

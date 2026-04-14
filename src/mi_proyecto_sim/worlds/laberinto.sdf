@@ -60,37 +60,37 @@
 
     <include>
       <uri>file://dronCamara.sdf</uri>
-      <pose>0 0 5 0 0 0</pose>
+      <pose>0 0 5.5 0 0 0</pose>
     </include>
 
     <include>
       <name>aruco_0</name>
       <uri>file://marcador_aruco/marcador_aruco0.sdf</uri>
-      <pose>2.2 2.2 0.01 0 0 0</pose>
+      <pose>2.2 2.2 0.01 0 0 -1.5708</pose>
     </include>
 
     <include>
       <name>aruco_1</name>
       <uri>file://marcador_aruco/marcador_aruco1.sdf</uri>
-      <pose>2.2 -2.2 0.01 0 0 0</pose>
+      <pose>2.2 -2.2 0.01 0 0 -1.5708</pose>
     </include>
 
     <include>
       <name>aruco_2</name>
       <uri>file://marcador_aruco/marcador_aruco2.sdf</uri>
-      <pose>-2.2 -2.2 0.01 0 0 0</pose>
+      <pose>-2.2 -2.2 0.01 0 0 -1.5708</pose>
     </include>
 
     <include>
       <name>aruco_3</name>
       <uri>file://marcador_aruco/marcador_aruco3.sdf</uri>
-      <pose>-2.2 2.2 0.01 0 0 0</pose>
+      <pose>-2.2 2.2 0.01 0 0 -1.5708</pose>
     </include>
 
     <include>
       <name>aruco_5</name>
       <uri>file://marcador_aruco/marcador_aruco5.sdf</uri>
-      <pose>1.2 1.2 0.06 0 0 0</pose>
+      <pose>1.4 -1.2 0.06 0 0 -1.5708</pose>
     </include>
 
     <include>
@@ -98,10 +98,12 @@
       <pose>-1.9 1.9 0 1.5708 0 0</pose>
     </include>
 
+    <!--
     <include>
       <uri>model://netanyaju</uri>
-      <pose>1.2 -0.8 0.05 3.14159 0 0</pose> 
+      <pose>1.2 -0.8 0.05 3.14159 0 0</pose>
     </include>
+    -->
 
   </world>
 </sdf>
