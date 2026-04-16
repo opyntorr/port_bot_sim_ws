@@ -76,16 +76,21 @@ public:
 
   void initMap(const std::string& path) {
     map_path_ = path;
+    map_loaded_ = false;
+  }
+
+  bool tryLoadMap() {
     map_original_ = imread(map_path_, IMREAD_GRAYSCALE);
     if (map_original_.empty()) {
-      RCLCPP_ERROR(this->get_logger(), "No se pudo cargar el mapa en la ruta: %s", map_path_.c_str());
-      rclcpp::shutdown();
-      return;
+      return false;
     }
 
     int robot_radius = 23.8 / 2;
     Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
     erode(map_original_, map_inflated_, kernel);
+    map_loaded_ = true;
+    RCLCPP_INFO(this->get_logger(), "Mapa cargado correctamente: %s", map_path_.c_str());
+    return true;
   }
 
   void publishPath(const vector<Point>& cv_path) {
@@ -112,6 +117,7 @@ public:
 
 private:
   string map_path_;
+  bool map_loaded_ = false;
   Mat map_original_;
   Mat map_inflated_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
@@ -120,6 +126,15 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
 
   void timer_callback() {
+    // Esperar a que el mapa exista en disco
+    if (!map_loaded_) {
+      if (!tryLoadMap()) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+          "Esperando mapa en: %s", map_path_.c_str());
+        return;
+      }
+    }
+
     geometry_msgs::msg::TransformStamped start_tf;
     geometry_msgs::msg::TransformStamped goal_tf;
 
