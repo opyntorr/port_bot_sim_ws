@@ -44,6 +44,7 @@ install(PROGRAMS
   mi_proyecto_sim/generador_mapa.py
   mi_proyecto_sim/planificador_astar.py
   mi_proyecto_sim/control_trayectoria.py
+  mi_proyecto_sim/filtro_lidar.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
