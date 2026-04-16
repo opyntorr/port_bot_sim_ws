@@ -22,6 +22,7 @@ class ArucoSlamTf(Node):
         self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
         self.parameters = cv2.aruco.DetectorParameters_create()
 
+
         # Medidas de nuestro mapa aplanado
         self.tamano_pixel_mapa = 440
         self.resolucion_m_px = 4.4 / self.tamano_pixel_mapa

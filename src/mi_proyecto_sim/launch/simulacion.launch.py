@@ -18,6 +18,7 @@ def generate_launch_description():
     xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco.urdf.xacro')
     rviz_config = os.path.join(pkg_sim, 'rviz', 'configuracion.rviz')
 
+
     # 1. Variables de entorno para que Gazebo encuentre los modelos
     set_env = SetEnvironmentVariable(
         name='IGN_GAZEBO_RESOURCE_PATH',
@@ -45,7 +46,13 @@ def generate_launch_description():
             '/uav/camera/image@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
             '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
-            '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image'
+            '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/model/rosmaster_x3/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            '/model/rosmaster_x3/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V'
+        ],
+        remappings=[
+            ('/model/rosmaster_x3/odometry', '/odom'),
+            ('/model/rosmaster_x3/tf', '/tf')
         ],
         output='screen'
     )
@@ -143,13 +150,7 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]  # <--- ¡DESCOMENTADO! Fundamental para las coordenadas 3D
     )
 
-    # Nodo para conectar el ArUco con el modelo 3D del carrito
-    tf_bridge = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='aruco_to_robot_bridge',
-        arguments=['0', '0', '0', '0', '0', '0', 'carrito_aruco', 'base_footprint']
-    )
+    # (tf_bridge estático eliminado: ahora usamos la odometría dinámica de las ruedas)
 
     # 6. Servidor de Mapas (Nav2 Map Server)
     map_server_node = Node(
@@ -174,6 +175,32 @@ def generate_launch_description():
             'autostart': True,
             'node_names': ['map_server']
         }]
+    )
+
+    # 8. Filtro LiDAR (Software 110 grados)
+    filtro_lidar_node = Node(
+        package='mi_proyecto_sim',
+        executable='filtro_lidar.py',
+        name='filtro_lidar',
+        output='screen',
+        parameters=[{'use_sim_time': True}]
+    )
+
+    # 9. SLAM Toolbox (Mapeo 2D)
+    slam_node = Node(
+        package='slam_toolbox',
+        executable='async_slam_toolbox_node',
+        name='slam_toolbox',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'odom_frame': 'map', # <--- Odometría provista por Aruco
+            'base_frame': 'base_footprint',
+            'map_frame': 'map_slam',
+            'scan_topic': '/scan_filtered',
+            'mode': 'mapping'
+        }],
+        remappings=[('/map', '/map_slam')]
     )
 
     # Nodo de Planificación de Ruta
@@ -213,5 +240,8 @@ def generate_launch_description():
         detector_aruco_node,
         map_server_node,
         lifecycle_manager_node,
-        planificador_rrt_node
+        planificador_rrt_node,
+        filtro_lidar_node,
+        slam_node
     ])
+
