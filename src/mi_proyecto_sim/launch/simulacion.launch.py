@@ -9,6 +9,10 @@ from launch_ros.parameter_descriptions import ParameterFile
 
 def generate_launch_description():
     pkg_sim = get_package_share_directory('mi_proyecto_sim')
+    # Derivar la raíz del workspace: install/mi_proyecto_sim/share/mi_proyecto_sim -> 4 niveles arriba
+    ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
+    mapa_pgm = os.path.join(ws_root, 'mapa_laberinto.pgm')
+    mapa_yaml = os.path.join(ws_root, 'mapa_laberinto.yaml')
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
     xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco.urdf.xacro')
@@ -154,7 +158,7 @@ def generate_launch_description():
         name='map_server',
         output='screen',
         parameters=[{
-            'yaml_filename': '/ros2_ws/mapa_laberinto.yaml',
+            'yaml_filename': mapa_yaml,
             'use_sim_time': True  # <--- ¡DESCOMENTADO! Sincronizado con Gazebo
         }]
     )
@@ -173,20 +177,20 @@ def generate_launch_description():
     )
 
     # Nodo de Planificación de Ruta
-    planificador_node = Node(
-        package='mi_proyecto_sim',
-        executable='planificador_astar.py',
-        name='planificador_astar',
-        output='screen',
-        parameters=[{'use_sim_time': True}]
-    )
+    # planificador_node = Node(
+    #     package='mi_proyecto_sim',
+    #     executable='planificador_astar.py',
+    #     name='planificador_astar',
+    #     output='screen',
+    #     parameters=[{'use_sim_time': True}]
+    # )
 
     # Nodo de Planificación RRT
     planificador_rrt_node = Node(
         package='mi_proyecto_sim',
         executable='planificador_rrt',
         name='planificador_rrt',
-        arguments=['/ros2_ws/mapa_laberinto.pgm'],
+        arguments=[mapa_pgm],
         output='screen',
         parameters=[{'use_sim_time': True}]
     )
@@ -209,6 +213,5 @@ def generate_launch_description():
         detector_aruco_node,
         map_server_node,
         lifecycle_manager_node,
-        planificador_node,
         planificador_rrt_node
     ])
