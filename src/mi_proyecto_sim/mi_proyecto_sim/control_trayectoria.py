@@ -44,7 +44,7 @@ class ControlTrayectoria(Node):
         self._theta_o = None
         
         # Parametros del controlador de Kelly & Diaz (Sintonizados para fidelidad)
-        self.h = 0.08          # Desplazamiento del punto de interes
+        self.h = 0.1          # Desplazamiento del punto de interes
         self.k_px = 2.0        # Ganancia proporcional (ligeramente menor para suavidad)
         self.k_py = 2.0        
         self.v_max = 0.2      # Velocidad maxima permitida
@@ -56,7 +56,7 @@ class ControlTrayectoria(Node):
 
 
         
-        self.lookahead_dist = 0.1 # Distancia para buscar el siguiente punto objetivo
+        self.lookahead_dist = 0.12 # Menos atajo en curvas para más precisión
         
         self.current_target_index = 0
         self.ruta_completada = False
@@ -68,11 +68,12 @@ class ControlTrayectoria(Node):
         self.last_aruco_timestamp = None
         self.first_aruco_received = False
         
-        # Variables de evasion dinamica y lidar
+        # Estado del LiDAR y evasión
         self.repulsion_x = 0.0
         self.repulsion_y = 0.0
         self.obstaculo_cerca = False
-        self.distancia_seguridad = 0.15 # Reducido para pasillos estrechos
+        self.umbral_frontal = 0.35 
+        self.umbral_lateral = 0.2 
 
         
         qos_scan = QoSProfile(
@@ -116,28 +117,20 @@ class ControlTrayectoria(Node):
 
             angle = msg.angle_min + i * msg.angle_increment
             
-            # UMBRAL DINÁMICO: 
-            # 0.5 metros al frente (cono de 30 grados: -15 a +15)
-            # 0.2 metros a los lados (el resto de los 110 grados)
-            umbral = 0.35 if abs(angle) < math.radians(15) else 0.15
+            # UMBRAL DINÁMICO usando las variables de clase
+            # Cono frontal de 30 grados (-15 a +15)
+            umbral = self.umbral_frontal if abs(angle) < math.radians(15) else self.umbral_lateral
             
             if r < umbral:
                 obstaculo = True
-                
-                # Fuerza asintótica proporcional al umbral de la zona
-                fuerza = - ((umbral - r) / umbral)
-                
-                # Sumatoria local en base_footprint
+                # Repulsión cuadrática: más suave lejos, más fuerte cerca
+                fuerza = - ((umbral - r) / umbral)**2
                 rep_x += fuerza * math.cos(angle)
                 rep_y += fuerza * math.sin(angle)
                 
         self.obstaculo_cerca = obstaculo
-        if obstaculo:
-            self.repulsion_x = rep_x
-            self.repulsion_y = rep_y
-        else:
-            self.repulsion_x = 0.0
-            self.repulsion_y = 0.0
+        self.repulsion_x = rep_x if obstaculo else 0.0
+        self.repulsion_y = rep_y if obstaculo else 0.0
 
     def get_current_pose(self):
         # 1. Obtener la odometria del callback directo
@@ -279,7 +272,7 @@ class ControlTrayectoria(Node):
         u2 = v_ref_y + self.k_py * e_y
         # Capa de Reactividad (Evasion Dinamica Local convertida a Mundo)
         if self.obstaculo_cerca:
-            k_rep = 1.0 # Multiplicador de fuerza repulsiva
+            k_rep = 0.5 # Menos agresivo para no pelear con la ruta
             # Rotar los vectores locales del carrito hacia el mundo(mapa)
             rep_mundo_x = (self.repulsion_x * math.cos(theta) - self.repulsion_y * math.sin(theta)) * k_rep
             rep_mundo_y = (self.repulsion_x * math.sin(theta) + self.repulsion_y * math.cos(theta)) * k_rep
@@ -291,9 +284,9 @@ class ControlTrayectoria(Node):
         # 5. Saturación de control
         v = max(min(v, self.v_max), -self.v_max)
         w = max(min(w, self.w_max), -self.w_max)
-        # 6. SUAVIZADO: Filtro Pasa-Baja (0.1 = muy suave, 1.0 = sin filtro)
-        alpha_v = 0.2 # Suavizado para velocidad lineal
-        alpha_w = 0.3 # Suavizado para velocidad angular
+        # 6. SUAVIZADO: Más alto = más reactivo (0.1 = muy lento, 1.0 = instantáneo)
+        alpha_v = 0.5 
+        alpha_w = 0.5 
         self.v_prev = (alpha_v * v) + (1.0 - alpha_v) * self.v_prev
         self.w_prev = (alpha_w * w) + (1.0 - alpha_w) * self.w_prev
 

@@ -8,6 +8,8 @@ import cv2
 import numpy as np
 import yaml
 import os
+from ament_index_python.packages import get_package_share_directory
+from nav2_msgs.srv import LoadMap
 
 class GeneradorMapaAruco(Node):
     def __init__(self):
@@ -85,9 +87,23 @@ class GeneradorMapaAruco(Node):
                         cv2.circle(mapa_binario, (centro_x_mapa, centro_y_mapa), radio_borrado_px, 255, -1)
                         self.get_logger().info(f"✨ Mancha del ID {curr_id} eliminada con éxito.")
                 
-                # Guardar archivos
-                directorio_actual = os.getcwd()
-                cv2.imwrite(os.path.join(directorio_actual, 'mapa_laberinto.pgm'), mapa_binario)
+                # Guardar archivos en la carpeta de mapas del paquete
+                try:
+                    pkg_sim = get_package_share_directory('mi_proyecto_sim')
+                    # install/mi_proyecto_sim/share/mi_proyecto_sim -> 4 niveles arriba -> ws_root
+                    ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
+                    dir_mapas = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps')
+                    
+                    if not os.path.exists(dir_mapas):
+                        os.makedirs(dir_mapas, exist_ok=True)
+                except Exception:
+                    # Fallback si falla el descubrimiento del paquete
+                    dir_mapas = os.getcwd()
+
+                path_pgm = os.path.join(dir_mapas, 'mapa_laberinto.pgm')
+                path_yaml = os.path.join(dir_mapas, 'mapa_laberinto.yaml')
+
+                cv2.imwrite(path_pgm, mapa_binario)
                 
                 config_yaml = {
                     'image': 'mapa_laberinto.pgm',
@@ -97,10 +113,20 @@ class GeneradorMapaAruco(Node):
                     'free_thresh': 0.196,
                     'negate': 0
                 }
-                with open(os.path.join(directorio_actual, 'mapa_laberinto.yaml'), 'w') as f:
+                with open(path_yaml, 'w') as f:
                     yaml.dump(config_yaml, f, default_flow_style=False)
                 
-                self.get_logger().info("🎉 ¡Mapa estático LIMPIO generado!")
+                # NUEVO: Pedirle al Map Server que recargue el mapa en caliente
+                self.get_logger().info("🔄 Solicitando recarga del mapa al Map Server...")
+                cli = self.create_client(LoadMap, '/map_server/load_map')
+                while not cli.wait_for_service(timeout_sec=1.0):
+                    self.get_logger().info('Servicio /map_server/load_map no disponible, esperando...')
+                
+                req = LoadMap.Request()
+                req.map_url = path_yaml
+                cli.call_async(req)
+                
+                self.get_logger().info(f"🎉 ¡Mapa estático LIMPIO generado y recarga solicitada!")
                 raise SystemExit
 
 def main(args=None):
