@@ -11,8 +11,8 @@ def generate_launch_description():
     pkg_sim = get_package_share_directory('mi_proyecto_sim')
     # Derivar la raíz del workspace: install/mi_proyecto_sim/share/mi_proyecto_sim -> 4 niveles arriba
     ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
-    mapa_pgm = os.path.join(ws_root, 'mapa_laberinto.pgm')
-    mapa_yaml = os.path.join(ws_root, 'mapa_laberinto.yaml')
+    mapa_pgm = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.pgm')
+    mapa_yaml = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.yaml')
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
     xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco.urdf.xacro')
@@ -217,7 +217,6 @@ def generate_launch_description():
         package='mi_proyecto_sim',
         executable='planificador_rrt',
         name='planificador_rrt',
-        arguments=[mapa_pgm],
         output='screen',
         parameters=[{'use_sim_time': True}]
     )

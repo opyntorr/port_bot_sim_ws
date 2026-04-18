@@ -6,6 +6,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
 // TF2 Headers
@@ -65,32 +66,40 @@ public:
     auto custom_qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/rrt_path", custom_qos);
 
+    // Suscriptor al mapa dinámico
+    map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+      "/map", custom_qos, std::bind(&RRTRosNode::map_callback, this, std::placeholders::_1));
+
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    // Timer configurado para buscar las posiciones cada 500ms hasta que las encuentre
     timer_ = this->create_wall_timer(
       std::chrono::milliseconds(500),
       std::bind(&RRTRosNode::timer_callback, this));
   }
 
-  void initMap(const std::string& path) {
-    map_path_ = path;
-    map_loaded_ = false;
-  }
+  void map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+    RCLCPP_INFO(this->get_logger(), "Mapa recibido de /map (%ux%u)", msg->info.width, msg->info.height);
+    
+    int w = msg->info.width;
+    int h = msg->info.height;
+    Mat temp_map(h, w, CV_8UC1);
 
-  bool tryLoadMap() {
-    map_original_ = imread(map_path_, IMREAD_GRAYSCALE);
-    if (map_original_.empty()) {
-      return false;
+    for (int i = 0; i < h * w; i++) {
+        int8_t val = msg->data[i];
+        if (val == 0) temp_map.data[i] = 255;
+        else if (val == 100) temp_map.data[i] = 0;
+        else temp_map.data[i] = 0;
     }
 
-    int robot_radius = 23.8 / 2;
+    flip(temp_map, map_original_, 0);
+
+    int robot_radius = 31.5 / 2 + 3;
     Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
     erode(map_original_, map_inflated_, kernel);
+    
     map_loaded_ = true;
-    RCLCPP_INFO(this->get_logger(), "Mapa cargado correctamente: %s", map_path_.c_str());
-    return true;
+    RCLCPP_INFO(this->get_logger(), "Mapa actualizado e inflado.");
   }
 
   void publishPath(const vector<Point>& cv_path) {
@@ -111,28 +120,24 @@ public:
     }
 
     path_pub_->publish(ros_path);
-    RCLCPP_INFO(this->get_logger(), "Ruta RRT publicada con %zu puntos", ros_path.poses.size());
-    RCLCPP_INFO(this->get_logger(), "==> Nodo mantenido VIVO en background para RViz.");
+    RCLCPP_INFO(this->get_logger(), "Ruta RRT publicada.");
   }
 
 private:
-  string map_path_;
   bool map_loaded_ = false;
   Mat map_original_;
   Mat map_inflated_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   void timer_callback() {
-    // Esperar a que el mapa exista en disco
     if (!map_loaded_) {
-      if (!tryLoadMap()) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-          "Esperando mapa en: %s", map_path_.c_str());
+          "Esperando mapa en el tópico /map...");
         return;
-      }
     }
 
     geometry_msgs::msg::TransformStamped start_tf;
@@ -306,16 +311,10 @@ private:
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   
-  if (argc < 2) {
-    RCLCPP_ERROR(rclcpp::get_logger("rclcpp"), "Uso: ros2 run mi_proyecto_sim planificador_rrt <ruta_al_mapa.pgm>");
-    return -1;
-  }
-
   auto node = std::make_shared<RRTRosNode>();
-  node->initMap(argv[1]);
 
-  // Spin mantendra vivo este planificador para que publique el Topic y atrape los TFs,
-  // pero el RRT solo se calculara 1 vez, al activarse y detenerse su timer_callback().
+  // Spin mantendrá vivo este planificador para que escuche el tópico /map,
+  // atrape los TFs y publique la ruta.
   rclcpp::spin(node);
   rclcpp::shutdown();
 
