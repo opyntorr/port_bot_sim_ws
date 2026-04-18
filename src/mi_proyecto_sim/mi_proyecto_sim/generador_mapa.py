@@ -22,19 +22,40 @@ class GeneradorMapaAruco(Node):
         self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
         self.parameters = cv2.aruco.DetectorParameters_create()
         
-        self.tamano_pixel_mapa = 440
-        self.resolucion_m_px = 4.4 / self.tamano_pixel_mapa 
+        # Parámetros Intrínsecos de la cámara del dron (según dronCamara.sdf)
+        # width=1280, height=720, hfov=1.4416
+        # f = (1280/2) / tan(1.4416/2) ≈ 728.26
+        self.K = np.array([
+            [728.26, 0.0, 640.0],
+            [0.0, 728.26, 360.0],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float32)
+        
+        # Coeficientes de distorsión [k1, k2, p1, p2, k3]
+        self.D = np.array([-0.05, 0.01, 0.0, 0.0, 0.0], dtype=np.float32)
 
         self.get_logger().info("📸 Esperando la 'foto perfecta' con TODOS los marcadores (0, 1, 2, 3, 4 y 5)...")
 
-    def obtener_centro_aruco(self, corners):
-        puntos = np.array(corners).flatten()
-        centro_x = int(np.mean(puntos[0::2])) 
-        centro_y = int(np.mean(puntos[1::2])) 
-        return [centro_x, centro_y]
+    def obtener_centro_y_escala(self, corners):
+        puntos = np.array(corners).reshape((4, 2))
+        centro_x = int(np.mean(puntos[:, 0])) 
+        centro_y = int(np.mean(puntos[:, 1])) 
+        
+        # Calcular el tamaño del marcador en píxeles (promedio de los lados)
+        lado1 = np.linalg.norm(puntos[0] - puntos[1])
+        lado2 = np.linalg.norm(puntos[1] - puntos[2])
+        lado3 = np.linalg.norm(puntos[2] - puntos[3])
+        lado4 = np.linalg.norm(puntos[3] - puntos[0])
+        px_per_02m = (lado1 + lado2 + lado3 + lado4) / 4.0
+        
+        return [centro_x, centro_y], px_per_02m
 
     def image_callback(self, msg):
-        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        raw_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        
+        # NUEVO: Corregir distorsión de la lente antes de detectar nada
+        cv_image = cv2.undistort(raw_image, self.K, self.D)
+        
         corners, ids, rejected = cv2.aruco.detectMarkers(cv_image, self.aruco_dict, parameters=self.parameters)
         
         if ids is not None:
@@ -49,21 +70,43 @@ class GeneradorMapaAruco(Node):
                 self.get_logger().info("✅ ¡Los 6 marcadores detectados simultáneamente! Procesando...")
                 
                 puntos_src = []
+                escalas = []
                 for marcador in [0, 1, 2, 3]:
                     idx = ids_detectados.index(marcador)
-                    puntos_src.append(self.obtener_centro_aruco(corners[idx]))
+                    centro, esc = self.obtener_centro_y_escala(corners[idx])
+                    puntos_src.append(centro)
+                    escalas.append(esc)
                 
+                # Promedio de píxeles por cada 0.2 metros
+                px_per_02m_avg = np.mean(escalas)
+                px_per_meter = px_per_02m_avg / 0.2
+                
+                # Calcular distancias reales en metros basándose en los centros
+                dist_01_px = np.linalg.norm(np.array(puntos_src[0]) - np.array(puntos_src[1]))
+                dist_03_px = np.linalg.norm(np.array(puntos_src[0]) - np.array(puntos_src[3]))
+                
+                ancho_m = dist_01_px / px_per_meter
+                alto_m = dist_03_px / px_per_meter
+                
+                # Definir resolución deseada (1cm/px es estándar y compatible con tu RRT)
+                self.resolucion_m_px = 0.01 
+                
+                width_px = int(ancho_m / self.resolucion_m_px)
+                height_px = int(alto_m / self.resolucion_m_px)
+                
+                self.get_logger().info(f"📏 Dimensiones detectadas: {ancho_m:.2f}m x {alto_m:.2f}m ({width_px}x{height_px} px)")
+
                 pts_origen = np.array(puntos_src, dtype=np.float32)
                 pts_destino = np.array([
                     [0, 0],                                           
-                    [self.tamano_pixel_mapa, 0],                      
-                    [self.tamano_pixel_mapa, self.tamano_pixel_mapa], 
-                    [0, self.tamano_pixel_mapa]                       
+                    [width_px, 0],                      
+                    [width_px, height_px], 
+                    [0, height_px]                       
                 ], dtype=np.float32)
                 
                 # Aplanar y binarizar
                 matriz_homografia = cv2.getPerspectiveTransform(pts_origen, pts_destino)
-                mapa_plano = cv2.warpPerspective(cv_image, matriz_homografia, (self.tamano_pixel_mapa, self.tamano_pixel_mapa))
+                mapa_plano = cv2.warpPerspective(cv_image, matriz_homografia, (width_px, height_px))
                 mapa_gris = cv2.cvtColor(mapa_plano, cv2.COLOR_BGR2GRAY)
                 mapa_suavizado = cv2.GaussianBlur(mapa_gris, (5, 5), 0)
                 _, mapa_binario = cv2.threshold(mapa_suavizado, 110, 255, cv2.THRESH_BINARY_INV)
@@ -77,7 +120,7 @@ class GeneradorMapaAruco(Node):
                 for marker_corners, marker_id_arr in zip(corners, ids):
                     curr_id = marker_id_arr[0]
                     if curr_id in ids_a_borrar:
-                        centro_original = self.obtener_centro_aruco(marker_corners)
+                        centro_original, _ = self.obtener_centro_y_escala(marker_corners)
                         punto_original_3d = np.array([[[centro_original[0], centro_original[1]]]], dtype=np.float32)
                         punto_plano_3d = cv2.perspectiveTransform(punto_original_3d, matriz_homografia)
                         
@@ -108,7 +151,7 @@ class GeneradorMapaAruco(Node):
                 config_yaml = {
                     'image': 'mapa_laberinto.pgm',
                     'resolution': self.resolucion_m_px,
-                    'origin': [0.0, -4.4, 0.0],
+                    'origin': [0.0, -alto_m, 0.0],
                     'occupied_thresh': 0.65,
                     'free_thresh': 0.196,
                     'negate': 0
