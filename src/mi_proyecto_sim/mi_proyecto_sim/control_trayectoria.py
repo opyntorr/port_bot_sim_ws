@@ -6,6 +6,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPo
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Path, Odometry
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Empty
 from tf2_ros import Buffer, TransformListener
 import tf2_ros
 import tf_transformations
@@ -47,7 +48,7 @@ class ControlTrayectoria(Node):
         self.h = 0.1          # Desplazamiento del punto de interes
         self.k_px = 2.0        # Ganancia proporcional (ligeramente menor para suavidad)
         self.k_py = 2.0        
-        self.v_max = 0.2      # Velocidad maxima permitida
+        self.v_max = 0.35      # Velocidad maxima permitida
         self.w_max = 1.2       # Velocidad angular maxima permitida
 
         # Variables para suavizado (Filtro Pasa-Baja)
@@ -56,12 +57,16 @@ class ControlTrayectoria(Node):
 
 
         
-        self.lookahead_dist = 0.10 # Menos atajo en curvas para más precisión
+        self.lookahead_dist = 0.12 # Menos atajo en curvas para más precisión
         
         self.current_target_index = 0
         self.ruta_completada = False
         
-        # Variables para fusion de odometria
+        # Variables para replanificación automática (Watchdog)
+        self.replan_pub = self.create_publisher(Empty, '/replan_request', 10)
+        self.last_advance_time = self.get_clock().now()
+        self.last_target_index = 0
+        self.replan_cooldown = 2.0 # Segundos de espera mínima entre peticiones
         self.odom_offset_x = 0.0
         self.odom_offset_y = 0.0
         self.odom_offset_theta = 0.0
@@ -72,8 +77,9 @@ class ControlTrayectoria(Node):
         self.repulsion_x = 0.0
         self.repulsion_y = 0.0
         self.obstaculo_cerca = False
+        self.peligro_frontal = False
         self.umbral_frontal = 0.35 
-        self.umbral_lateral = 0.2 
+        self.umbral_lateral = 0.22 
 
         
         qos_scan = QoSProfile(
@@ -106,9 +112,10 @@ class ControlTrayectoria(Node):
         self._theta_o = euler[2]
 
     def scan_callback(self, msg):
+        obstaculo = False
+        peligro_frontal = False
         rep_x = 0.0
         rep_y = 0.0
-        obstaculo = False
         
         for i, r in enumerate(msg.ranges):
             # Ignorar distancias no válidas
@@ -117,18 +124,24 @@ class ControlTrayectoria(Node):
 
             angle = msg.angle_min + i * msg.angle_increment
             
-            # UMBRAL DINÁMICO usando las variables de clase
-            # Cono frontal de 30 grados (-15 a +15)
-            umbral = self.umbral_frontal if abs(angle) < math.radians(15) else self.umbral_lateral
+            # Cono frontal de 30 grados para frenado y suavizado de esquinas (-15 a +15)
+            # Reducido para que las paredes laterales no frenen tanto
+            es_frontal = abs(angle) < math.radians(15)
+            umbral = self.umbral_frontal if es_frontal else self.umbral_lateral
             
             if r < umbral:
                 obstaculo = True
+                if es_frontal:
+                    peligro_frontal = True
+                
                 # Repulsión cuadrática: más suave lejos, más fuerte cerca
                 fuerza = - ((umbral - r) / umbral)**2
                 rep_x += fuerza * math.cos(angle)
                 rep_y += fuerza * math.sin(angle)
                 
         self.obstaculo_cerca = obstaculo
+        self.peligro_frontal = peligro_frontal
+        # Fuerza cruda (sin promediar) para que la evasión sea real y potente
         self.repulsion_x = rep_x if obstaculo else 0.0
         self.repulsion_y = rep_y if obstaculo else 0.0
 
@@ -253,7 +266,19 @@ class ControlTrayectoria(Node):
             self.ruta_completada = True
             return
 
-        # 3. Calcular errores
+        # 4. Watchdog: Si no avanzamos de punto en 6 segundos, replanificar
+        now = self.get_clock().now()
+        if self.current_target_index > self.last_target_index:
+            self.last_target_index = self.current_target_index
+            self.last_advance_time = now
+        else:
+            elapsed = (now - self.last_advance_time).nanoseconds / 1e9
+            if elapsed > 8.0:
+                self.get_logger().warn("¡Bloqueo detectado! No se avanza de waypoint en 8s. Solicitando replanificación...")
+                self.replan_pub.publish(Empty())
+                self.last_advance_time = now # Reset para no saturar mientras llega la nueva ruta
+
+        # 5. Calcular errores
         e_x = x_d - x_c
         e_y = y_d - y_c
         # Para hacer el seguimiento más dinamico, calculamos una velocidad de feedforward hacia el objetivo
@@ -269,18 +294,26 @@ class ControlTrayectoria(Node):
 
         # Velocidades de control en el mundo (u1, u2) (Atracción con prioridad dinámica)
         k_att = 1.0
-        if self.obstaculo_cerca:
-            k_att = 0.1  # Prioridad casi nula a la ruta ante un obstáculo inminente
-
+        if self.peligro_frontal:
+            k_att = 0.5  # Más potencia en curvas para no "pegarse" a la esquina
+            
         u1 = k_att * (v_ref_x + self.k_px * e_x)
         u2 = k_att * (v_ref_y + self.k_py * e_y)
 
         # Capa de Reactividad (Evasión Dinámica Local convertida a Mundo)
         if self.obstaculo_cerca:
-            k_rep = 2.0 # Fuerza de repulsión extrema para seguridad
             # Rotar los vectores locales del carrito hacia el mundo(mapa)
-            rep_mundo_x = (self.repulsion_x * math.cos(theta) - self.repulsion_y * math.sin(theta)) * k_rep
-            rep_mundo_y = (self.repulsion_x * math.sin(theta) + self.repulsion_y * math.cos(theta)) * k_rep
+            rep_mundo_x = (self.repulsion_x * math.cos(theta) - self.repulsion_y * math.sin(theta))
+            rep_mundo_y = (self.repulsion_x * math.sin(theta) + self.repulsion_y * math.cos(theta))
+            
+            # LIMITAR MAGNITUD (Capping): La repulsión no puede ser infinita
+            # La limitamos a 0.4 para que el giro sea potente pero controlable
+            rep_mag = math.hypot(rep_mundo_x, rep_mundo_y)
+            max_rep = 0.4
+            if rep_mag > max_rep:
+                rep_mundo_x = (rep_mundo_x / rep_mag) * max_rep
+                rep_mundo_y = (rep_mundo_y / rep_mag) * max_rep
+
             u1 += rep_mundo_x
             u2 += rep_mundo_y
         # 4. Transformar a velocidades del robot diferencial (v, w)
