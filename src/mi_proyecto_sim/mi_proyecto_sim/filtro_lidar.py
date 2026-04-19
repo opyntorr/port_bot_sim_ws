@@ -23,7 +23,7 @@ class FiltroLidar(Node):
         # pero RELIABLE es por defecto en rclpy. Lo dejamos por defecto para que SLAM lo lea facilmente)
         self.pub = self.create_publisher(LaserScan, '/scan_filtered', 10)
         
-        self.get_logger().info("Filtro Lidar a 110º inicializado. Escuchando en /scan, publicando en /scan_filtered")
+        self.get_logger().info("Filtro Lidar a 190º inicializado. Escuchando en /scan, publicando en /scan_filtered")
 
     def scan_callback(self, msg):
         import array
@@ -38,9 +38,9 @@ class FiltroLidar(Node):
         filtered_msg.range_min = float(msg.range_min)
         filtered_msg.range_max = float(msg.range_max)
         
-        # Angulos limite en radianes (+- 55 grados)
-        min_valid_angle = -55.0 * math.pi / 180.0
-        max_valid_angle = 55.0 * math.pi / 180.0
+        # Angulos limite en radianes (+- 95 grados para un fov de 190)
+        min_valid_angle = -95.0 * math.pi / 180.0
+        max_valid_angle = 95.0 * math.pi / 180.0
         
         new_ranges = []
         new_intensities = []

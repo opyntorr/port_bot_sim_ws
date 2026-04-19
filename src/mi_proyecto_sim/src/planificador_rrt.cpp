@@ -8,6 +8,7 @@
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_msgs/msg/empty.hpp>
 
 // TF2 Headers
 #include <tf2_ros/buffer.h>
@@ -94,6 +95,9 @@ public:
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
+    replan_sub_ = this->create_subscription<std_msgs::msg::Empty>(
+      "/replan_request", 10, std::bind(&RRTRosNode::replan_callback, this, std::placeholders::_1));
+
     timer_ = this->create_wall_timer(
       std::chrono::milliseconds(500),
       std::bind(&RRTRosNode::timer_callback, this));
@@ -150,15 +154,28 @@ private:
   Mat map_inflated_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr replan_sub_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   void timer_callback() {
+    if (do_planning()) {
+      timer_->cancel();
+    }
+  }
+
+  void replan_callback(const std_msgs::msg::Empty::SharedPtr msg) {
+    (void)msg;
+    RCLCPP_INFO(this->get_logger(), "Peticion de replanificacion recibida por topico.");
+    do_planning();
+  }
+
+  bool do_planning() {
     if (!map_loaded_) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
           "Esperando mapa en el tópico /map...");
-        return;
+        return false;
     }
 
     geometry_msgs::msg::TransformStamped start_tf;
@@ -169,13 +186,12 @@ private:
       start_tf = tf_buffer_->lookupTransform("map", "carrito_aruco", tf2::TimePointZero);
       goal_tf = tf_buffer_->lookupTransform("map", "meta_aruco", tf2::TimePointZero);
     } catch (const tf2::TransformException & ex) {
-      RCLCPP_INFO(this->get_logger(), "Esperando las TFs de carrito_aruco y meta_aruco... %s", ex.what());
-      return;
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "Esperando las TFs de carrito_aruco y meta_aruco...");
+      return false;
     }
 
-    // Al encontrar ambas TFs, detenemos el timer para correr el RRT UNA SOLA VEZ
-    timer_->cancel();
-    RCLCPP_INFO(this->get_logger(), "TFs encontradas exitosamente. Deteniendo la busqueda y calculando RRT...");
+    RCLCPP_INFO(this->get_logger(), "TFs encontradas. Calculando RRT...");
 
     double resolucion = 0.01;
 
@@ -212,6 +228,7 @@ private:
     double theta_goal = -y_goal;
 
     compute_rrt(start, theta_start, goal, theta_goal);
+    return true;
   }
 
   void compute_rrt(Point start, double theta_start, Point goal, double theta_goal) {
