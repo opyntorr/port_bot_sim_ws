@@ -56,7 +56,7 @@ class ControlTrayectoria(Node):
 
 
         
-        self.lookahead_dist = 0.12 # Menos atajo en curvas para más precisión
+        self.lookahead_dist = 0.10 # Menos atajo en curvas para más precisión
         
         self.current_target_index = 0
         self.ruta_completada = False
@@ -161,7 +161,7 @@ class ControlTrayectoria(Node):
                     # Calcular el target offset (transformacion de map a odom)
                     target_offset_theta = math.atan2(math.sin(theta_a_raw - theta_o), math.cos(theta_a_raw - theta_o))
                     target_offset_x = x_a_raw - (x_o * math.cos(target_offset_theta) - y_o * math.sin(target_offset_theta))
-                    target_offset_y = x_a_raw - (x_o * math.sin(target_offset_theta) + y_o * math.cos(target_offset_theta))
+                    target_offset_y = y_a_raw - (x_o * math.sin(target_offset_theta) + y_o * math.cos(target_offset_theta))
                     
                     if not self.first_aruco_received:
                         self.odom_offset_x = target_offset_x
@@ -267,12 +267,17 @@ class ControlTrayectoria(Node):
             v_ref_x = 0.0
             v_ref_y = 0.0
 
-        # Velocidades de control en el mundo (u1, u2) (Atraccion pura)
-        u1 = v_ref_x + self.k_px * e_x
-        u2 = v_ref_y + self.k_py * e_y
-        # Capa de Reactividad (Evasion Dinamica Local convertida a Mundo)
+        # Velocidades de control en el mundo (u1, u2) (Atracción con prioridad dinámica)
+        k_att = 1.0
         if self.obstaculo_cerca:
-            k_rep = 0.5 # Menos agresivo para no pelear con la ruta
+            k_att = 0.1  # Prioridad casi nula a la ruta ante un obstáculo inminente
+
+        u1 = k_att * (v_ref_x + self.k_px * e_x)
+        u2 = k_att * (v_ref_y + self.k_py * e_y)
+
+        # Capa de Reactividad (Evasión Dinámica Local convertida a Mundo)
+        if self.obstaculo_cerca:
+            k_rep = 2.0 # Fuerza de repulsión extrema para seguridad
             # Rotar los vectores locales del carrito hacia el mundo(mapa)
             rep_mundo_x = (self.repulsion_x * math.cos(theta) - self.repulsion_y * math.sin(theta)) * k_rep
             rep_mundo_y = (self.repulsion_x * math.sin(theta) + self.repulsion_y * math.cos(theta)) * k_rep
@@ -285,8 +290,8 @@ class ControlTrayectoria(Node):
         v = max(min(v, self.v_max), -self.v_max)
         w = max(min(w, self.w_max), -self.w_max)
         # 6. SUAVIZADO: Más alto = más reactivo (0.1 = muy lento, 1.0 = instantáneo)
-        alpha_v = 0.5 
-        alpha_w = 0.5 
+        alpha_v = 0.8 
+        alpha_w = 0.8 
         self.v_prev = (alpha_v * v) + (1.0 - alpha_v) * self.v_prev
         self.w_prev = (alpha_w * w) + (1.0 - alpha_w) * self.w_prev
 
