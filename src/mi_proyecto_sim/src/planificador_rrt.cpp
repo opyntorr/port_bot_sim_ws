@@ -59,6 +59,27 @@ vector<Point> smooth_path(const Mat &map, const vector<Point> &raw_path) {
   return smoothed;
 }
 
+vector<Point> densify_path(const vector<Point>& path, double max_dist_px) {
+  if (path.size() < 2) return path;
+  vector<Point> dense_path;
+  for (size_t i = 0; i < path.size() - 1; ++i) {
+    dense_path.push_back(path[i]);
+    double d = get_dist(path[i], path[i+1]);
+    if (d > max_dist_px) {
+      int num_segments = ceil(d / max_dist_px);
+      for (int j = 1; j < num_segments; ++j) {
+        double t = static_cast<double>(j) / num_segments;
+        dense_path.push_back(Point(
+          path[i].x + t * (path[i+1].x - path[i].x),
+          path[i].y + t * (path[i+1].y - path[i].y)
+        ));
+      }
+    }
+  }
+  dense_path.push_back(path.back());
+  return dense_path;
+}
+
 class RRTRosNode : public rclcpp::Node {
 public:
   RRTRosNode() : Node("planificador_rrt", 
@@ -283,10 +304,11 @@ private:
       reverse(inner_path.begin(), inner_path.end());
 
       vector<Point> smoothed_inner = smooth_path(map_inflated_, inner_path);
+      vector<Point> dense_inner = densify_path(smoothed_inner, 5.0); // Cada 5 px (5cm)
 
       vector<Point> final_path;
       final_path.push_back(start);
-      for (Point p : smoothed_inner) final_path.push_back(p);
+      for (Point p : dense_inner) final_path.push_back(p);
       final_path.push_back(goal);
 
       for (size_t i = 0; i < final_path.size() - 1; i++) {
