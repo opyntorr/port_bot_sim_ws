@@ -38,10 +38,10 @@ El robot navega de forma autónoma a través de un laberinto utilizando un pipel
 
 | Nodo | Archivo | Función |
 |------|---------|---------|
-| `detector_aruco` | `detector_aruco.py` | Localización visual mediante marcadores ArUco (cámara del dron) |
-| `control_trayectoria` | `control_trayectoria.py` | Fusión de sensores + seguimiento de ruta (Kelly & Diaz) + evasión reactiva |
-| `planificador_rrt` | `planificador_rrt.cpp` | Generación de rutas libres de colisiones (algoritmo RRT) |
-| `filtro_lidar` | `filtro_lidar.py` | Recorte del campo de visión del LiDAR a 110° frontales |
+| `detector_aruco` | `detector_aruco.py` | Localización visual ArUco + Persistencia Snapshot JSON |
+| `control_trayectoria` | `control_trayectoria.py` | Fusión de sensores + Kelly & Diaz + Evasión explosiva + Watchdog (4s) |
+| `planificador_rrt` | `planificador_rrt.cpp` | Generación de rutas RRT con soporte para replanificación automática |
+| `filtro_lidar` | `filtro_lidar.py` | Recorte del campo de visión del LiDAR a 190° |
 | `generador_mapa` | `generador_mapa.py` | Generación automática del mapa de ocupación desde la cámara del dron |
 
 ### Fusión de Sensores (Odometría + ArUco)
@@ -49,13 +49,14 @@ El robot navega de forma autónoma a través de un laberinto utilizando un pipel
 El sistema utiliza un **filtro pasa-baja (α=0.1)** para fusionar la odometría de las ruedas con las detecciones ArUco:
 - **90% Odometría**: Proporciona movimiento suave y continuo.
 - **10% ArUco**: Corrige la deriva acumulada cada vez que la cámara del dron detecta el marcador.
-- **Fallback**: Si la odometría no está disponible al arrancar, el robot usa la posición cruda del ArUco para iniciar la navegación.
+- **Snapshot Persistente**: Almacena la última calibración exitosa en `config/last_snapshot.json`, permitiendo inicializar la navegación instantáneamente aunque el dron no vea los marcadores al arrancar.
+- **Watchdog de Bloqueo**: Si el robot no avanza en su ruta durante **4 segundos**, solicita automáticamente una nueva ruta al planificador RRT.
 
-### Evasión de Obstáculos
+### Evasión de Obstáculos y Seguridad
 
-El sistema utiliza un campo de seguridad **direccional** basado en el LiDAR:
-- **Frente** (cono de ±15°): Umbral de 35 cm (mayor precaución).
-- **Lados** (resto del campo): Umbral de 15 cm (permite pasillos estrechos).
+El sistema utiliza un campo de fuerza reactivo (Potenciales Artificiales) optimizado:
+- **Frente** (cono de ±20°): Umbral de **35 cm** con frenado proporcional (v=0 a los 20 cm).
+- **Lados** (±95°): Umbral de **25 cm** con repulsión explosiva (Ganancia 10.0) para evitar colisiones laterales.
 
 ---
 
