@@ -3,11 +3,11 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseStamped, TransformStamped
 from nav_msgs.msg import Path, Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Empty
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformListener, StaticTransformBroadcaster
 import tf2_ros
 import tf_transformations
 import math
@@ -37,9 +37,15 @@ class ControlTrayectoria(Node):
         # Lector de transformaciones TF2 (para ArUco)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         
-        # Suscriptor directo de odometria (mas robusto que TF lookup en Gazebo Sim)
-        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+        # Perfil de QoS optimizado para Odometría (Best Effort para Ignition Gazebo 6)
+        qos_pose = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5
+        )
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_pose)
         self._x_o = None
         self._y_o = None
         self._theta_o = None
@@ -72,14 +78,19 @@ class ControlTrayectoria(Node):
         self.odom_offset_theta = 0.0
         self.last_aruco_timestamp = None
         self.first_aruco_received = False
+        self.start_time = self.get_clock().now()
+        self.forced_odom_start = False
         
         # Estado del LiDAR y evasión
         self.repulsion_x = 0.0
         self.repulsion_y = 0.0
         self.obstaculo_cerca = False
         self.peligro_frontal = False
+        self.min_dist_frontal = 1.0
         self.umbral_frontal = 0.35 
-        self.umbral_lateral = 0.22 
+        self.umbral_lateral = 0.25 
+        
+        self.last_log_time = self.get_clock().now() 
 
         
         qos_scan = QoSProfile(
@@ -104,12 +115,15 @@ class ControlTrayectoria(Node):
         self.ruta_completada = False
 
     def odom_callback(self, msg):
-        """Lectura directa de odometria por topico (bypass de TF)."""
+        """Lectura de Odometría estándar Yahboom (msg.pose.pose)."""
         self._x_o = msg.pose.pose.position.x
         self._y_o = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
-        euler = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
-        self._theta_o = euler[2]
+        
+        # Cálculo de Yaw (desde cuaternión)
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self._theta_o = math.atan2(siny_cosp, cosy_cosp)
 
     def scan_callback(self, msg):
         obstaculo = False
@@ -117,33 +131,49 @@ class ControlTrayectoria(Node):
         rep_x = 0.0
         rep_y = 0.0
         
+        self.min_dist_frontal = 1.0
+        num_invalidos = 0
+        
         for i, r in enumerate(msg.ranges):
             # Ignorar distancias no válidas
             if r < 0.05 or math.isinf(r) or math.isnan(r):
+                num_invalidos += 1
                 continue
 
             angle = msg.angle_min + i * msg.angle_increment
             
-            # Cono frontal de 30 grados para frenado y suavizado de esquinas (-15 a +15)
-            # Reducido para que las paredes laterales no frenen tanto
-            es_frontal = abs(angle) < math.radians(15)
+            # Cono frontal original (30 grados totales: -15 a +15)
+            es_frontal = abs(angle) < math.radians(20)
             umbral = self.umbral_frontal if es_frontal else self.umbral_lateral
             
+            if es_frontal:
+                self.min_dist_frontal = min(self.min_dist_frontal, r)
+
             if r < umbral:
                 obstaculo = True
                 if es_frontal:
                     peligro_frontal = True
                 
-                # Repulsión cuadrática: más suave lejos, más fuerte cerca
-                fuerza = - ((umbral - r) / umbral)**2
+                # Repulsión potenciada (Ganancia 6.0 para respuesta explosiva)
+                fuerza = - 10.0 * ((umbral - r) / umbral)**2
                 rep_x += fuerza * math.cos(angle)
                 rep_y += fuerza * math.sin(angle)
                 
         self.obstaculo_cerca = obstaculo
         self.peligro_frontal = peligro_frontal
-        # Fuerza cruda (sin promediar) para que la evasión sea real y potente
         self.repulsion_x = rep_x if obstaculo else 0.0
         self.repulsion_y = rep_y if obstaculo else 0.0
+        
+        # LOG DE DIAGNÓSTICO CADA SEGUNDO
+        now = self.get_clock().now()
+        if (now - self.last_log_time).nanoseconds / 1e9 > 1.0:
+            if not obstaculo:
+                 self.get_logger().info(f"LIDAR: Camino despejado. Min Frontal: {self.min_dist_frontal:.2f}m")
+            else:
+                 self.get_logger().warn(f"LIDAR: ¡OBSTÁCULO! Dist: {self.min_dist_frontal:.2f}m | Fuerza Rep: [{self.repulsion_x:.2f}, {self.repulsion_y:.2f}]")
+            
+            if num_invalidos > len(msg.ranges) * 0.9:
+                self.get_logger().error("⚠️ CRÍTICO: El LIDAR está recibiendo casi todos los datos inválidos (inf/nan).")
 
     def get_current_pose(self):
         # 1. Obtener la odometria del callback directo
@@ -170,40 +200,67 @@ class ControlTrayectoria(Node):
             if self.last_aruco_timestamp != current_aruco_timestamp:
                 self.last_aruco_timestamp = current_aruco_timestamp
                 
-                if x_o is not None:
+                if x_o is not None and not self.first_aruco_received:
                     # Calcular el target offset (transformacion de map a odom)
-                    target_offset_theta = math.atan2(math.sin(theta_a_raw - theta_o), math.cos(theta_a_raw - theta_o))
-                    target_offset_x = x_a_raw - (x_o * math.cos(target_offset_theta) - y_o * math.sin(target_offset_theta))
-                    target_offset_y = y_a_raw - (x_o * math.sin(target_offset_theta) + y_o * math.cos(target_offset_theta))
+                    theta_a_map = theta_a_raw
                     
-                    if not self.first_aruco_received:
-                        self.odom_offset_x = target_offset_x
-                        self.odom_offset_y = target_offset_y
-                        self.odom_offset_theta = target_offset_theta
-                        self.first_aruco_received = True
-                        self.get_logger().info("Odometria inicializada con ArUco.")
-                    else:
-                        # FUSION CONTINUA: Filtro pasa-baja (alpha=0.1)
-                        # 90% odometria (fluidez) + 10% ArUco (precision global)
-                        alpha = 0.1
-                        self.odom_offset_x = (1.0 - alpha) * self.odom_offset_x + alpha * target_offset_x
-                        self.odom_offset_y = (1.0 - alpha) * self.odom_offset_y + alpha * target_offset_y
-                        
-                        diff_theta = math.atan2(math.sin(target_offset_theta - self.odom_offset_theta), 
-                                                math.cos(target_offset_theta - self.odom_offset_theta))
-                        self.odom_offset_theta += alpha * diff_theta
-                        self.odom_offset_theta = math.atan2(math.sin(self.odom_offset_theta), math.cos(self.odom_offset_theta))
+                    self.odom_offset_theta = math.atan2(math.sin(theta_a_map - theta_o), math.cos(theta_a_map - theta_o))
+                    self.odom_offset_x = x_a_raw - (x_o * math.cos(self.odom_offset_theta) - y_o * math.sin(self.odom_offset_theta))
+                    self.odom_offset_y = y_a_raw - (x_o * math.sin(self.odom_offset_theta) + y_o * math.cos(self.odom_offset_theta))
+                    
+                    self.first_aruco_received = True
+                    self.get_logger().info(f"¡Snapshot Realizado! Offset: [{self.odom_offset_x:.2f}, {self.odom_offset_y:.2f}, {math.degrees(self.odom_offset_theta):.2f}º]")
+                    
+                    # PUBLICAR TRANSFORMACION ESTATICA map -> odom para completar el arbol de TF
+                    t = TransformStamped()
+                    t.header.stamp = self.get_clock().now().to_msg()
+                    t.header.frame_id = 'map'
+                    t.child_frame_id = 'odom'
+                    t.transform.translation.x = self.odom_offset_x
+                    t.transform.translation.y = self.odom_offset_y
+                    t.transform.translation.z = 0.0
+                    
+                    q = tf_transformations.quaternion_from_euler(0, 0, self.odom_offset_theta)
+                    t.transform.rotation.x = q[0]
+                    t.transform.rotation.y = q[1]
+                    t.transform.rotation.z = q[2]
+                    t.transform.rotation.w = q[3]
+                    
+                    self.static_tf_broadcaster.sendTransform(t)
+                    self.get_logger().info("TF estática 'map' -> 'odom' publicada con éxito. Navegando por odometría.")
 
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             pass
 
         # 3. Calcular la posicion final estimada combinada
-        if x_o is not None and self.first_aruco_received:
-            x_curr = self.odom_offset_x + x_o * math.cos(self.odom_offset_theta) - y_o * math.sin(self.odom_offset_theta)
-            y_curr = self.odom_offset_y + x_o * math.sin(self.odom_offset_theta) + y_o * math.cos(self.odom_offset_theta)
-            theta_curr = self.odom_offset_theta + theta_o
-            theta_curr = math.atan2(math.sin(theta_curr), math.cos(theta_curr))
-            return x_curr, y_curr, theta_curr
+        if x_o is not None:
+            if self.first_aruco_received:
+                # Caso A: Tenemos calibración ArUco (Snapshot) o ya forzamos inicio
+                x_curr = self.odom_offset_x + x_o * math.cos(self.odom_offset_theta) - y_o * math.sin(self.odom_offset_theta)
+                y_curr = self.odom_offset_y + x_o * math.sin(self.odom_offset_theta) + y_o * math.cos(self.odom_offset_theta)
+                theta_curr = self.odom_offset_theta + theta_o
+                theta_curr = math.atan2(math.sin(theta_curr), math.cos(theta_curr))
+                return x_curr, y_curr, theta_curr
+            else:
+                # Caso B: No hay ArUco todavía. ¿Forzamos inicio por Odometría pura?
+                elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
+                if elapsed > 4.0:
+                    self.get_logger().warn("⚠️ No se detecta ArUco (Tablero incompleto). Iniciando por Odometría.")
+                    # Usamos la odometría actual como pose absoluta para no saltar
+                    self.odom_offset_x = 0.0
+                    self.odom_offset_y = 0.0
+                    self.odom_offset_theta = 0.0
+                    self.first_aruco_received = True # Marcamos como recibido para entrar en Caso A
+                    return x_o, y_o, theta_o
+
+        # DIAGNOSTICOS: Informar por qué no tenemos pose todavía
+        now = self.get_clock().now()
+        if (now - self.last_log_time).nanoseconds / 1e9 > 5.0:
+            if x_o is None:
+                self.get_logger().info("Esperando datos de odometría en /odom...")
+            else:
+                self.get_logger().info("Odometría OK. Esperando snapshot de ArUco para alinear (4s timeout)...")
+            self.last_log_time = now
 
         # FALLBACK: Si no hay odom aun, usar ArUco crudo para arrancar
         if x_a_raw is not None:
@@ -265,15 +322,28 @@ class ControlTrayectoria(Node):
             self.stop_robot()
             self.ruta_completada = True
             return
+            
+        # 3. Log de progreso cada 2 segundos con Telemetría de Velocidad
+        now = self.get_clock().now()
+        if (now - self.last_log_time).nanoseconds / 1e9 > 2.0:
+            percent = (self.current_target_index + 1) / len(self.path_points) * 100
+            # Incluimos V y W actuales para ver si el robot se está intentando mover
+            self.get_logger().info(f"Seguimiento: {self.current_target_index + 1}/{len(self.path_points)} ({percent:.1f}%) | V: {self.v_prev:.2f} W: {self.w_prev:.2f}")
+            self.last_log_time = now
 
         # 4. Watchdog: Si no avanzamos de punto en 6 segundos, replanificar
         now = self.get_clock().now()
+        
+        # LOG DE PULSO VITAL: Ángulo actual crudo (para ver si se mueve)
+        if (now - self.last_log_time).nanoseconds / 1e9 > 1.0:
+             self.get_logger().info(f"[DIAGNÓSTICO] ÁNGULO CRUDO ODOM: {math.degrees(theta):.2f}º")
+        
         if self.current_target_index > self.last_target_index:
             self.last_target_index = self.current_target_index
             self.last_advance_time = now
         else:
             elapsed = (now - self.last_advance_time).nanoseconds / 1e9
-            if elapsed > 8.0:
+            if elapsed > 4.0:
                 self.get_logger().warn("¡Bloqueo detectado! No se avanza de waypoint en 8s. Solicitando replanificación...")
                 self.replan_pub.publish(Empty())
                 self.last_advance_time = now # Reset para no saturar mientras llega la nueva ruta
@@ -293,9 +363,12 @@ class ControlTrayectoria(Node):
             v_ref_y = 0.0
 
         # Velocidades de control en el mundo (u1, u2) (Atracción con prioridad dinámica)
-        k_att = 1.0
-        if self.peligro_frontal:
-            k_att = 0.5  # Más potencia en curvas para no "pegarse" a la esquina
+        # FRENADO PREVENTIVO: Si estamos a menos de 50cm, reducimos k_att gradualmente hasta 0 en los 20cm (punto ciego)
+        if self.min_dist_frontal < self.umbral_frontal:
+            k_att = (self.min_dist_frontal - 0.20) / (self.umbral_frontal - 0.20)
+            k_att = max(0.0, min(1.0, k_att))
+        else:
+            k_att = 1.0
             
         u1 = k_att * (v_ref_x + self.k_px * e_x)
         u2 = k_att * (v_ref_y + self.k_py * e_y)
@@ -307,9 +380,9 @@ class ControlTrayectoria(Node):
             rep_mundo_y = (self.repulsion_x * math.sin(theta) + self.repulsion_y * math.cos(theta))
             
             # LIMITAR MAGNITUD (Capping): La repulsión no puede ser infinita
-            # La limitamos a 0.4 para que el giro sea potente pero controlable
+            # Reducimos max_rep para evitar que el robot se quede bloqueado en pasillos estrechos
             rep_mag = math.hypot(rep_mundo_x, rep_mundo_y)
-            max_rep = 0.4
+            max_rep = 0.25  # Bajamos de 0.4 a 0.25 para permitir paso por zonas estrechas
             if rep_mag > max_rep:
                 rep_mundo_x = (rep_mundo_x / rep_mag) * max_rep
                 rep_mundo_y = (rep_mundo_y / rep_mag) * max_rep

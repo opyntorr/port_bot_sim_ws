@@ -69,7 +69,6 @@
       update_rate="15.0"
       topic_name="imu/data"/>
 
-    <!--
     <xacro:include filename="$(find yahboom_rosmaster_description)/urdf/control/velocity_control_plugin.urdf.xacro" />
     <xacro:load_velocity_control_plugin use_gazebo="$(arg use_gazebo)"/>
 
@@ -82,7 +81,6 @@
     <xacro:yahboom_rosmaster_ros2_control
       prefix="$(arg prefix)"
       use_gazebo="$(arg use_gazebo)"/>
-    -->
 
 
 </robot>

@@ -35,30 +35,4 @@
         <origin xyz="0 0 0.19" rpy="0 0 0" />
     </joint>
 
-    <gazebo>
-        <plugin filename="libignition-gazebo-mecanum-drive-system.so"
-            name="ignition::gazebo::systems::MecanumDrive">
-            <front_left_joint>front_left_wheel_joint</front_left_joint>
-            <front_right_joint>front_right_wheel_joint</front_right_joint>
-            <back_left_joint>back_left_wheel_joint</back_left_joint>
-            <back_right_joint>back_right_wheel_joint</back_right_joint>
-            <wheel_separation>0.149</wheel_separation>
-            <wheelbase>0.16</wheelbase>
-            <wheel_radius>0.0325</wheel_radius>
-            <odom_frame>odom</odom_frame>
-            <robot_base_frame>base_footprint</robot_base_frame>
-            <publish_odom>true</publish_odom>
-            <publish_odom_tf>true</publish_odom_tf>
-            <topic>/cmd_vel</topic>
-        </plugin>
-
-        <!-- (VelocityControl comentado para usar MecanumDrive con fisica real)
-        <plugin filename="libignition-gazebo-velocity-control-system.so"
-        name="ignition::gazebo::systems::VelocityControl">
-            <topic>/cmd_vel</topic>
-        </plugin>
-        -->
-
-    </gazebo>
-
 </robot>
