@@ -48,11 +48,13 @@ def generate_launch_description():
             '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
             '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/model/rosmaster_x3/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
-            '/model/rosmaster_x3/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V'
+            '/model/rosmaster_x3/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
+            '/model/rosmaster_x3/pose@geometry_msgs/msg/PoseStamped[ignition.msgs.Pose'
         ],
         remappings=[
             ('/model/rosmaster_x3/odometry', '/odom'),
-            ('/model/rosmaster_x3/tf', '/tf')
+            ('/model/rosmaster_x3/tf', '/tf'),
+            ('/model/rosmaster_x3/pose', '/odom_pose')
         ],
         output='screen'
     )
