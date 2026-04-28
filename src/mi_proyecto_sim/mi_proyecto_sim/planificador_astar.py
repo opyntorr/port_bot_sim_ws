@@ -53,7 +53,13 @@ class PlanificadorRuta(Node):
         try:
             # 1. Obtener posiciones actuales desde TF
             now = rclpy.time.Time()
-            tf_car = self.tf_buffer.lookup_transform('map', 'carrito_aruco', now)
+            try:
+                # Intentar obtener la TF dinámica del robot
+                tf_car = self.tf_buffer.lookup_transform('map', 'base_footprint', now)
+            except Exception:
+                # Fallback a la snapshot inicial del drone
+                tf_car = self.tf_buffer.lookup_transform('map', 'carrito_aruco', now)
+            
             tf_goal = self.tf_buffer.lookup_transform('map', 'meta_aruco', now)
             
             inicio = self.metro_a_pixel(tf_car.transform.translation.x, tf_car.transform.translation.y)

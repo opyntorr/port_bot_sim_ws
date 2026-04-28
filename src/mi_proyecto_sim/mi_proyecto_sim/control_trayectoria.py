@@ -7,7 +7,7 @@ from geometry_msgs.msg import Twist, PoseStamped, TransformStamped
 from nav_msgs.msg import Path, Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Empty
-from tf2_ros import Buffer, TransformListener, StaticTransformBroadcaster
+from tf2_ros import Buffer, TransformListener, StaticTransformBroadcaster, TransformBroadcaster
 import tf2_ros
 import tf_transformations
 import math
@@ -38,6 +38,7 @@ class ControlTrayectoria(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
+        self.dynamic_tf_broadcaster = TransformBroadcaster(self)
         
         # Perfil de QoS optimizado para Odometría (Best Effort para Ignition Gazebo 6)
         qos_pose = QoSProfile(
@@ -124,6 +125,17 @@ class ControlTrayectoria(Node):
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self._theta_o = math.atan2(siny_cosp, cosy_cosp)
+        
+        # Publicar TF dinámico de odom a base_footprint
+        t = TransformStamped()
+        t.header.stamp = msg.header.stamp if msg.header.stamp.sec > 0 else self.get_clock().now().to_msg()
+        t.header.frame_id = 'odom'
+        t.child_frame_id = 'base_footprint'
+        t.transform.translation.x = msg.pose.pose.position.x
+        t.transform.translation.y = msg.pose.pose.position.y
+        t.transform.translation.z = msg.pose.pose.position.z
+        t.transform.rotation = msg.pose.pose.orientation
+        self.dynamic_tf_broadcaster.sendTransform(t)
 
     def scan_callback(self, msg):
         obstaculo = False

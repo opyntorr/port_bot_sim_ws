@@ -207,12 +207,24 @@ private:
     geometry_msgs::msg::TransformStamped goal_tf;
 
     try {
-      // Buscar TFs (timeout 0)
-      start_tf = tf_buffer_->lookupTransform("map", "carrito_aruco", tf2::TimePointZero);
+      // Intentar obtener la TF dinámica del robot primero
+      start_tf = tf_buffer_->lookupTransform("map", "base_footprint", tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      try {
+        // Fallback a la snapshot estática del drone
+        start_tf = tf_buffer_->lookupTransform("map", "carrito_aruco", tf2::TimePointZero);
+      } catch (const tf2::TransformException & ex2) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+          "Esperando la TF del carrito...");
+        return false;
+      }
+    }
+
+    try {
       goal_tf = tf_buffer_->lookupTransform("map", "meta_aruco", tf2::TimePointZero);
     } catch (const tf2::TransformException & ex) {
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-        "Esperando las TFs de carrito_aruco y meta_aruco...");
+        "Esperando la TF de meta_aruco...");
       return false;
     }
 
