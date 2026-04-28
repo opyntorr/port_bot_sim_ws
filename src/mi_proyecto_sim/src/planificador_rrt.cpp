@@ -103,8 +103,28 @@ public:
       std::bind(&RRTRosNode::timer_callback, this));
   }
 
+  // Conversión mundo → pixel (en Mat volteado de OpenCV)
+  Point world_to_pixel(double wx, double wy) {
+    int col = static_cast<int>((wx - map_origin_x_) / map_resolution_);
+    int row = map_height_ - 1 - static_cast<int>((wy - map_origin_y_) / map_resolution_);
+    return Point(col, row);
+  }
+
+  // Conversión pixel → mundo
+  void pixel_to_world(const Point& p, double& wx, double& wy) {
+    wx = p.x * map_resolution_ + map_origin_x_;
+    wy = (map_height_ - 1 - p.y) * map_resolution_ + map_origin_y_;
+  }
+
   void map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
-    RCLCPP_INFO(this->get_logger(), "Mapa recibido de /map (%ux%u)", msg->info.width, msg->info.height);
+    // Guardar metadatos del mapa para conversiones
+    map_resolution_ = msg->info.resolution;
+    map_origin_x_ = msg->info.origin.position.x;
+    map_origin_y_ = msg->info.origin.position.y;
+    map_height_ = msg->info.height;
+
+    RCLCPP_INFO(this->get_logger(), "Mapa recibido: %ux%u @ %.3f m/px, origen (%.2f, %.2f)",
+      msg->info.width, msg->info.height, map_resolution_, map_origin_x_, map_origin_y_);
     
     int w = msg->info.width;
     int h = msg->info.height;
@@ -112,19 +132,21 @@ public:
 
     for (int i = 0; i < h * w; i++) {
         int8_t val = msg->data[i];
-        if (val == 0) temp_map.data[i] = 255;
-        else if (val == 100) temp_map.data[i] = 0;
-        else temp_map.data[i] = 0;
+        if (val >= 0 && val <= 30) temp_map.data[i] = 255;   // Libre
+        else if (val > 60) temp_map.data[i] = 0;             // Ocupado
+        else temp_map.data[i] = 128;                         // Desconocido
     }
 
     flip(temp_map, map_original_, 0);
 
-    int robot_radius = 31.5 / 2 + 3;
+    // Radio del robot en pixels (0.19m = ~16cm radio + 3cm seguridad)
+    double robot_radius_m = 0.19;
+    int robot_radius = static_cast<int>(ceil(robot_radius_m / map_resolution_));
     Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
     erode(map_original_, map_inflated_, kernel);
     
     map_loaded_ = true;
-    RCLCPP_INFO(this->get_logger(), "Mapa actualizado e inflado.");
+    RCLCPP_INFO(this->get_logger(), "Mapa inflado (radio=%d px = %.2f m).", robot_radius, robot_radius_m);
   }
 
   void publishPath(const vector<Point>& cv_path) {
@@ -132,11 +154,10 @@ public:
     ros_path.header.stamp = this->get_clock()->now();
     ros_path.header.frame_id = "map";
 
-    double resolucion = 0.01;
     for (const auto& p : cv_path) {
       geometry_msgs::msg::PoseStamped pose;
-      double x_m = p.x * resolucion;
-      double y_m = -(p.y * resolucion);
+      double x_m, y_m;
+      pixel_to_world(p, x_m, y_m);
 
       pose.pose.position.x = x_m;
       pose.pose.position.y = y_m;
@@ -145,13 +166,17 @@ public:
     }
 
     path_pub_->publish(ros_path);
-    RCLCPP_INFO(this->get_logger(), "Ruta RRT publicada.");
+    RCLCPP_INFO(this->get_logger(), "Ruta RRT publicada (%zu puntos).", cv_path.size());
   }
 
 private:
   bool map_loaded_ = false;
   Mat map_original_;
   Mat map_inflated_;
+  double map_resolution_ = 0.05;
+  double map_origin_x_ = 0.0;
+  double map_origin_y_ = 0.0;
+  int map_height_ = 0;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr replan_sub_;
@@ -193,12 +218,10 @@ private:
 
     RCLCPP_INFO(this->get_logger(), "TFs encontradas. Calculando RRT...");
 
-    double resolucion = 0.01;
-
-    // Convertir transformacion de carrito a px
-    Point start(
-      start_tf.transform.translation.x / resolucion,
-      -(start_tf.transform.translation.y / resolucion)
+    // Convertir transformacion de carrito a px usando resolución y origen del mapa
+    Point start = world_to_pixel(
+      start_tf.transform.translation.x,
+      start_tf.transform.translation.y
     );
 
     tf2::Quaternion q_start(
@@ -212,9 +235,9 @@ private:
     double theta_start = -y_start; // Invertir yaw para OpenCV
 
     // Convertir transformacion de meta a px
-    Point goal(
-      goal_tf.transform.translation.x / resolucion,
-      -(goal_tf.transform.translation.y / resolucion)
+    Point goal = world_to_pixel(
+      goal_tf.transform.translation.x,
+      goal_tf.transform.translation.y
     );
 
     tf2::Quaternion q_goal(
@@ -232,7 +255,8 @@ private:
   }
 
   void compute_rrt(Point start, double theta_start, Point goal, double theta_goal) {
-    int vector_len = 20; // Reducido de 40 a 20 para evitar chocar inmediatamente
+    // Distancias en metros convertidas a pixels según resolución del mapa
+    int vector_len = max(2, static_cast<int>(0.20 / map_resolution_)); // ~20cm
     Point start_fwd(start.x + vector_len * cos(theta_start), start.y + vector_len * sin(theta_start));
     Point goal_app(goal.x - vector_len * cos(theta_goal), goal.y - vector_len * sin(theta_goal));
 
@@ -253,7 +277,7 @@ private:
     vector<RRTNode> tree;
     tree.push_back(RRTNode(start_fwd, -1));
 
-    int step_size = 15;
+    int step_size = max(2, static_cast<int>(0.15 / map_resolution_)); // ~15cm
     int max_iter = 15000;
     double goal_margin = step_size * 1.5; 
 
@@ -321,7 +345,8 @@ private:
       reverse(inner_path.begin(), inner_path.end());
 
       vector<Point> smoothed_inner = smooth_path(map_inflated_, inner_path);
-      vector<Point> dense_inner = densify_path(smoothed_inner, 5.0); // Cada 5 px (5cm)
+      double densify_dist = max(1.0, 0.05 / map_resolution_); // ~5cm entre puntos
+      vector<Point> dense_inner = densify_path(smoothed_inner, densify_dist);
 
       vector<Point> final_path;
       final_path.push_back(start);
