@@ -146,6 +146,9 @@ class ControlTrayectoria(Node):
         self.min_dist_frontal = 1.0
         num_invalidos = 0
         
+        fuerza_izq = 0.0
+        fuerza_der = 0.0
+        
         for i, r in enumerate(msg.ranges):
             # Ignorar distancias no válidas
             if r < 0.05 or math.isinf(r) or math.isnan(r):
@@ -166,15 +169,42 @@ class ControlTrayectoria(Node):
                 if es_frontal:
                     peligro_frontal = True
                 
-                # Repulsión potenciada (Ganancia 6.0 para respuesta explosiva)
-                fuerza = - 10.0 * ((umbral - r) / umbral)**2
-                rep_x += fuerza * math.cos(angle)
-                rep_y += fuerza * math.sin(angle)
+                # Fuerza proporcional a la cercanía
+                fuerza = 10.0 * ((umbral - r) / umbral)**2
                 
+                # Componente puramente repulsivo (empuja hacia atrás)
+                rep_x += -fuerza * math.cos(angle)
+                rep_y += -fuerza * math.sin(angle)
+                
+                # Para el Vórtice: saber de qué lado viene más fuerza
+                if angle > 0:
+                    fuerza_izq += fuerza
+                else:
+                    fuerza_der += fuerza
+                
+        if obstaculo:
+            # Calcular fuerza tangencial (Vortex) perpendicular a la repulsión
+            # Si el obstáculo está a la derecha, rodear por la izquierda (antihorario)
+            if fuerza_der > fuerza_izq:
+                tang_x = -rep_y
+                tang_y = rep_x
+            else:
+                # Obstáculo a la izquierda, rodear por la derecha (horario)
+                tang_x = rep_y
+                tang_y = -rep_x
+                
+            # Combinación de repulsión (para no chocar) y tangencial (para deslizarse)
+            peso_rep = 0.4
+            peso_tang = 0.7
+            
+            self.repulsion_x = (rep_x * peso_rep) + (tang_x * peso_tang)
+            self.repulsion_y = (rep_y * peso_rep) + (tang_y * peso_tang)
+        else:
+            self.repulsion_x = 0.0
+            self.repulsion_y = 0.0
+            
         self.obstaculo_cerca = obstaculo
         self.peligro_frontal = peligro_frontal
-        self.repulsion_x = rep_x if obstaculo else 0.0
-        self.repulsion_y = rep_y if obstaculo else 0.0
         
         # LOG DE DIAGNÓSTICO CADA SEGUNDO
         now = self.get_clock().now()
@@ -394,7 +424,7 @@ class ControlTrayectoria(Node):
             # LIMITAR MAGNITUD (Capping): La repulsión no puede ser infinita
             # Reducimos max_rep para evitar que el robot se quede bloqueado en pasillos estrechos
             rep_mag = math.hypot(rep_mundo_x, rep_mundo_y)
-            max_rep = 0.25  # Bajamos de 0.4 a 0.25 para permitir paso por zonas estrechas
+            max_rep = 0.45  # Aumentado para vencer mejor la inercia en esquinas (antes 0.25)
             if rep_mag > max_rep:
                 rep_mundo_x = (rep_mundo_x / rep_mag) * max_rep
                 rep_mundo_y = (rep_mundo_y / rep_mag) * max_rep

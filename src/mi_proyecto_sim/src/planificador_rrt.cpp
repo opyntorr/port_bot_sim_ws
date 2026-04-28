@@ -267,27 +267,28 @@ private:
   }
 
   void compute_rrt(Point start, double theta_start, Point goal, double theta_goal) {
-    // Distancias en metros convertidas a pixels según resolución del mapa
+    // Despejar el área inicial del robot para permitir que el planificador 
+    // encuentre una salida si el robot ya rozó la zona inflada de un obstáculo
+    int escape_radius = static_cast<int>(ceil(0.20 / map_resolution_));
+    circle(map_inflated_, start, escape_radius, Scalar(255), -1);
+
+    // Para la meta, mantenemos una aproximación direccional suave
     int vector_len = max(2, static_cast<int>(0.20 / map_resolution_)); // ~20cm
-    Point start_fwd(start.x + vector_len * cos(theta_start), start.y + vector_len * sin(theta_start));
     Point goal_app(goal.x - vector_len * cos(theta_goal), goal.y - vector_len * sin(theta_goal));
 
-    bool start_coll = check_collision(map_inflated_, start, start);
     bool goal_coll = check_collision(map_inflated_, goal, goal);
-    bool start_fwd_coll = check_collision(map_inflated_, start, start_fwd);
     bool goal_app_coll = check_collision(map_inflated_, goal_app, goal);
 
-    if (start_coll || goal_coll || start_fwd_coll || goal_app_coll) {
-      RCLCPP_ERROR(this->get_logger(), "Error de colision inicial o final en el mapa inflado:");
-      if (start_coll) RCLCPP_ERROR(this->get_logger(), " - El CENTRO del INICIO esta dentro de un obstaculo (o muy cerca de la pared).");
+    if (goal_coll || goal_app_coll) {
+      RCLCPP_ERROR(this->get_logger(), "Error de colision en la META del mapa inflado:");
       if (goal_coll) RCLCPP_ERROR(this->get_logger(), " - El CENTRO de la META esta dentro de un obstaculo.");
-      if (!start_coll && start_fwd_coll) RCLCPP_ERROR(this->get_logger(), " - La orientacion de INICIO apunta directo a una pared.");
       if (!goal_coll && goal_app_coll) RCLCPP_ERROR(this->get_logger(), " - La orientacion de LLEGADA a la meta atraviesa una pared.");
       return;
     }
 
     vector<RRTNode> tree;
-    tree.push_back(RRTNode(start_fwd, -1));
+    // Empezar directamente desde el centro del robot, permitiendo que gire sobre su eje si está trabado
+    tree.push_back(RRTNode(start, -1));
 
     int step_size = max(2, static_cast<int>(0.15 / map_resolution_)); // ~15cm
     int max_iter = 15000;
@@ -307,7 +308,6 @@ private:
 
     circle(map_color, start, 5, Scalar(0, 255, 0), -1);
     circle(map_color, goal, 5, Scalar(255, 0, 0), -1);
-    arrowedLine(map_color, start, start_fwd, Scalar(0, 255, 255), 2);
     arrowedLine(map_color, goal_app, goal, Scalar(0, 255, 255), 2);
 
     for (int i = 0; i < max_iter; i++) {
