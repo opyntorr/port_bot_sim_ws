@@ -7,7 +7,6 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-find_package(ros_gz_bridge REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -45,6 +44,7 @@ install(PROGRAMS
   mi_proyecto_sim/planificador_astar.py
   mi_proyecto_sim/control_trayectoria.py
   mi_proyecto_sim/filtro_lidar.py
+  mi_proyecto_sim/slam_occupancy_grid.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

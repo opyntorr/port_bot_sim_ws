@@ -12,7 +12,7 @@ def generate_launch_description():
     # Derivar la raíz del workspace: install/mi_proyecto_sim/share/mi_proyecto_sim -> 4 niveles arriba
     ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
     mapa_pgm = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.pgm')
-    mapa_yaml = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.yaml')
+    # mapa_yaml = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.yaml')
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
     xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco.urdf.xacro')
@@ -152,34 +152,42 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]  # <--- ¡DESCOMENTADO! Fundamental para las coordenadas 3D
     )
 
-    # (tf_bridge estático eliminado: ahora usamos la odometría dinámica de las ruedas)
-
-    # 6. Servidor de Mapas (Nav2 Map Server)
-    map_server_node = Node(
-        package='nav2_map_server',
-        executable='map_server',
-        name='map_server',
-        output='screen',
-        parameters=[{
-            'yaml_filename': mapa_yaml,
-            'use_sim_time': True  # <--- ¡DESCOMENTADO! Sincronizado con Gazebo
-        }]
+    # TF estática por defecto: map → odom (identidad).
+    # control_trayectoria la sobreescribirá con la calibración ArUco cuando arranque.
+    static_map_to_odom = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_map_to_odom',
+        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+        output='screen'
     )
 
-    # 7. Administrador de Ciclo de Vida (Para despertar al Map Server)
-    lifecycle_manager_node = Node(
-        package='nav2_lifecycle_manager',
-        executable='lifecycle_manager',
-        name='lifecycle_manager_map',
-        output='screen',
-        parameters=[{
-            'use_sim_time': True, # <--- ¡DESCOMENTADO!
-            'autostart': True,
-            'node_names': ['map_server']
-        }]
-    )
+    # 6. Servidor de Mapas (Nav2 Map Server) — COMENTADO: reemplazado por slam_occupancy_grid
+    # map_server_node = Node(
+    #     package='nav2_map_server',
+    #     executable='map_server',
+    #     name='map_server',
+    #     output='screen',
+    #     parameters=[{
+    #         'yaml_filename': mapa_yaml,
+    #         'use_sim_time': True
+    #     }]
+    # )
 
-    # 8. Filtro LiDAR (Software 110 grados)
+    # 7. Administrador de Ciclo de Vida — COMENTADO: ya no se necesita sin map_server
+    # lifecycle_manager_node = Node(
+    #     package='nav2_lifecycle_manager',
+    #     executable='lifecycle_manager',
+    #     name='lifecycle_manager_map',
+    #     output='screen',
+    #     parameters=[{
+    #         'use_sim_time': True,
+    #         'autostart': True,
+    #         'node_names': ['map_server']
+    #     }]
+    # )
+
+    # 8. Filtro LiDAR (Software 190 grados)
     filtro_lidar_node = Node(
         package='mi_proyecto_sim',
         executable='filtro_lidar.py',
@@ -188,22 +196,42 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    # 9. SLAM Toolbox (Mapeo 2D)
-    slam_node = Node(
-        package='slam_toolbox',
-        executable='async_slam_toolbox_node',
-        name='slam_toolbox',
+    # 9. SLAM Occupancy Grid (Fusión Dron + LiDAR con replanificación)
+    slam_occupancy_grid_node = Node(
+        package='mi_proyecto_sim',
+        executable='slam_occupancy_grid.py',
+        name='slam_occupancy_grid',
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'odom_frame': 'map', # <--- Odometría provista por Aruco
-            'base_frame': 'base_footprint',
-            'map_frame': 'map_slam',
-            'scan_topic': '/scan_filtered',
-            'mode': 'mapping'
-        }],
-        remappings=[('/map', '/map_slam')]
+            'pgm_path': mapa_pgm,
+            'pgm_resolution': 0.01,
+            'pgm_origin_x': 0.0,
+            'pgm_origin_y': -4.4,
+            'map_resolution': 0.05,
+            'map_width': 120,
+            'map_height': 120,
+            'map_origin_x': -1.0,
+            'map_origin_y': -5.0,
+        }]
     )
+
+    # 10. SLAM Toolbox — COMENTADO: reemplazado por slam_occupancy_grid
+    # slam_node = Node(
+    #     package='slam_toolbox',
+    #     executable='async_slam_toolbox_node',
+    #     name='slam_toolbox',
+    #     output='screen',
+    #     parameters=[{
+    #         'use_sim_time': True,
+    #         'odom_frame': 'map',
+    #         'base_frame': 'base_footprint',
+    #         'map_frame': 'map_slam',
+    #         'scan_topic': '/scan_filtered',
+    #         'mode': 'mapping'
+    #     }],
+    #     remappings=[('/map', '/map_slam')]
+    # )
 
     # Nodo de Planificación de Ruta
     # planificador_node = Node(
@@ -239,10 +267,12 @@ def generate_launch_description():
         joy_node,
         teleop,
         detector_aruco_node,
-        map_server_node,
-        lifecycle_manager_node,
+        static_map_to_odom,          # Puente TF: map → odom (identidad por defecto)
+        # map_server_node,        # Reemplazado por slam_occupancy_grid
+        # lifecycle_manager_node, # Ya no se necesita
         planificador_rrt_node,
         filtro_lidar_node,
-        slam_node
+        slam_occupancy_grid_node, # Fusión Dron + LiDAR
+        # slam_node,              # Reemplazado por slam_occupancy_grid
     ])
 
