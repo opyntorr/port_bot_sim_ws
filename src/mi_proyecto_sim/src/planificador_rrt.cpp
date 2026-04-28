@@ -145,6 +145,11 @@ public:
     Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
     erode(map_original_, map_inflated_, kernel);
     
+    // Mapa relajado (1/4 de las medidas originales)
+    int relaxed_radius = max(1, static_cast<int>(ceil((robot_radius_m / 4.0) / map_resolution_)));
+    Mat kernel_relaxed = getStructuringElement(MORPH_RECT, Size(relaxed_radius * 2, relaxed_radius * 2));
+    erode(map_original_, map_relaxed_, kernel_relaxed);
+    
     map_loaded_ = true;
     RCLCPP_INFO(this->get_logger(), "Mapa inflado (radio=%d px = %.2f m).", robot_radius, robot_radius_m);
   }
@@ -173,6 +178,7 @@ private:
   bool map_loaded_ = false;
   Mat map_original_;
   Mat map_inflated_;
+  Mat map_relaxed_;
   double map_resolution_ = 0.05;
   double map_origin_x_ = 0.0;
   double map_origin_y_ = 0.0;
@@ -262,28 +268,42 @@ private:
     m_goal.getRPY(rg, pg, y_goal);
     double theta_goal = -y_goal;
 
-    compute_rrt(start, theta_start, goal, theta_goal);
-    return true;
+    // Bucle de intentos
+    bool success = false;
+    for (int i = 0; i < 3; i++) {
+        success = compute_rrt(start, theta_start, goal, theta_goal, map_inflated_, false);
+        if (success) break;
+    }
+
+    if (!success) {
+        RCLCPP_WARN(this->get_logger(), "Fallo tras 3 intentos en mapa inflado. Iniciando modo RELAJADO (1/4 de la medida original)...");
+        success = compute_rrt(start, theta_start, goal, theta_goal, map_relaxed_, true);
+    }
+
+    return success;
   }
 
-  void compute_rrt(Point start, double theta_start, Point goal, double theta_goal) {
+  bool compute_rrt(Point start, double theta_start, Point goal, double theta_goal, const Mat& map_in, bool is_relaxed) {
+    Mat working_map = map_in.clone();
     // Despejar el área inicial del robot para permitir que el planificador 
     // encuentre una salida si el robot ya rozó la zona inflada de un obstáculo
     int escape_radius = static_cast<int>(ceil(0.20 / map_resolution_));
-    circle(map_inflated_, start, escape_radius, Scalar(255), -1);
+    circle(working_map, start, escape_radius, Scalar(255), -1);
 
     // Para la meta, mantenemos una aproximación direccional suave
     int vector_len = max(2, static_cast<int>(0.20 / map_resolution_)); // ~20cm
     Point goal_app(goal.x - vector_len * cos(theta_goal), goal.y - vector_len * sin(theta_goal));
 
-    bool goal_coll = check_collision(map_inflated_, goal, goal);
-    bool goal_app_coll = check_collision(map_inflated_, goal_app, goal);
+    bool goal_coll = check_collision(working_map, goal, goal);
+    bool goal_app_coll = check_collision(working_map, goal_app, goal);
 
     if (goal_coll || goal_app_coll) {
-      RCLCPP_ERROR(this->get_logger(), "Error de colision en la META del mapa inflado:");
-      if (goal_coll) RCLCPP_ERROR(this->get_logger(), " - El CENTRO de la META esta dentro de un obstaculo.");
-      if (!goal_coll && goal_app_coll) RCLCPP_ERROR(this->get_logger(), " - La orientacion de LLEGADA a la meta atraviesa una pared.");
-      return;
+      if (!is_relaxed) {
+        RCLCPP_WARN(this->get_logger(), "Error de colisión en la META (mapa inflado).");
+      } else {
+        RCLCPP_ERROR(this->get_logger(), "Error de colisión en la META incluso con mapa relajado.");
+      }
+      return false;
     }
 
     vector<RRTNode> tree;
@@ -296,8 +316,8 @@ private:
 
     random_device rd;
     mt19937 gen(rd());
-    uniform_int_distribution<> distX(0, map_inflated_.cols - 1);
-    uniform_int_distribution<> distY(0, map_inflated_.rows - 1);
+    uniform_int_distribution<> distX(0, working_map.cols - 1);
+    uniform_int_distribution<> distY(0, working_map.rows - 1);
     uniform_real_distribution<> distProb(0.0, 1.0);
 
     bool goal_reached = false;
@@ -327,16 +347,16 @@ private:
       double theta = atan2(random_point.y - nearest_point.y, random_point.x - nearest_point.x);
       Point new_point(nearest_point.x + step_size * cos(theta), nearest_point.y + step_size * sin(theta));
 
-      if (new_point.x < 0 || new_point.x >= map_inflated_.cols ||
-          new_point.y < 0 || new_point.y >= map_inflated_.rows)
+      if (new_point.x < 0 || new_point.x >= working_map.cols ||
+          new_point.y < 0 || new_point.y >= working_map.rows)
         continue;
 
-      if (!check_collision(map_inflated_, nearest_point, new_point)) {
+      if (!check_collision(working_map, nearest_point, new_point)) {
         tree.push_back(RRTNode(new_point, nearest_idx));
         line(map_color, nearest_point, new_point, Scalar(255, 220, 220), 1);
 
         if (get_dist(new_point, goal_app) <= goal_margin) {
-          if (!check_collision(map_inflated_, new_point, goal_app)) {
+          if (!check_collision(working_map, new_point, goal_app)) {
             tree.push_back(RRTNode(goal_app, tree.size() - 1));
             last_node_id = tree.size() - 1;
             goal_reached = true;
@@ -356,7 +376,7 @@ private:
       }
       reverse(inner_path.begin(), inner_path.end());
 
-      vector<Point> smoothed_inner = smooth_path(map_inflated_, inner_path);
+      vector<Point> smoothed_inner = smooth_path(working_map, inner_path);
       double densify_dist = max(1.0, 0.05 / map_resolution_); // ~5cm entre puntos
       vector<Point> dense_inner = densify_path(smoothed_inner, densify_dist);
 
@@ -378,8 +398,12 @@ private:
       // Si no cierra, mantendra la instancia congelada, por lo tanto mejor que no se ejecute imshow/waitKey si es automatico
       // imshow("RRT Suavizado y Orientado", map_color);
       // waitKey(1000); 
+      return true;
     } else {
-      RCLCPP_ERROR(this->get_logger(), "Fallo la busqueda.");
+      if (is_relaxed) {
+        RCLCPP_ERROR(this->get_logger(), "Fallo la busqueda incluso en modo relajado.");
+      }
+      return false;
     }
   }
 };
