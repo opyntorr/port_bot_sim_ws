@@ -68,6 +68,7 @@ class ControlTrayectoria(Node):
         
         self.current_target_index = 0
         self.ruta_completada = False
+        self.pure_rotation_mode = False
         
         # Variables para replanificación automática (Watchdog)
         self.replan_pub = self.create_publisher(Empty, '/replan_request', 10)
@@ -114,6 +115,7 @@ class ControlTrayectoria(Node):
             
         self.current_target_index = 0
         self.ruta_completada = False
+        self.pure_rotation_mode = True  # Iniciar cada nueva ruta girando hacia el objetivo
 
     def odom_callback(self, msg):
         """Lectura de Odometría estándar Yahboom (msg.pose.pose)."""
@@ -146,8 +148,8 @@ class ControlTrayectoria(Node):
         self.min_dist_frontal = 1.0
         num_invalidos = 0
         
-        fuerza_izq = 0.0
-        fuerza_der = 0.0
+        self.fuerza_izq = 0.0
+        self.fuerza_der = 0.0
         
         for i, r in enumerate(msg.ranges):
             # Ignorar distancias no válidas
@@ -178,14 +180,14 @@ class ControlTrayectoria(Node):
                 
                 # Para el Vórtice: saber de qué lado viene más fuerza
                 if angle > 0:
-                    fuerza_izq += fuerza
+                    self.fuerza_izq += fuerza
                 else:
-                    fuerza_der += fuerza
+                    self.fuerza_der += fuerza
                 
         if obstaculo:
             # Calcular fuerza tangencial (Vortex) perpendicular a la repulsión
             # Si el obstáculo está a la derecha, rodear por la izquierda (antihorario)
-            if fuerza_der > fuerza_izq:
+            if self.fuerza_der > self.fuerza_izq:
                 tang_x = -rep_y
                 tang_y = rep_x
             else:
@@ -434,6 +436,26 @@ class ControlTrayectoria(Node):
         # 4. Transformar a velocidades del robot diferencial (v, w)
         v = u1 * math.cos(theta) + u2 * math.sin(theta)
         w = (-u1 * math.sin(theta) + u2 * math.cos(theta)) / self.h
+        
+        # SOBRESCRITURA DE CONTROL: Si estamos en modo Rotación Pura (inicio de ruta)
+        if self.pure_rotation_mode:
+            # Apuntar exactamente a target_x, target_y usando el centro del robot
+            theta_d = math.atan2(y_d - y, x_d - x)
+            e_theta = theta_d - theta
+            # Normalizar ángulo
+            while e_theta > math.pi: e_theta -= 2.0 * math.pi
+            while e_theta < -math.pi: e_theta += 2.0 * math.pi
+            
+            if abs(e_theta) > 0.05:
+                v = 0.0
+                # Asegurar velocidad mínima para vencer la fricción estática de Gazebo
+                w = 1.5 * e_theta
+                if abs(w) < 0.3:
+                    w = 0.3 if w > 0 else -0.3
+            else:
+                self.pure_rotation_mode = False # Termina la rotación, sigue Kelly & Diaz
+        
+
         # 5. Saturación de control
         v = max(min(v, self.v_max), -self.v_max)
         w = max(min(w, self.w_max), -self.w_max)

@@ -67,11 +67,24 @@ class SlamOccupancyGrid(Node):
         #        Grid de log-odds (inicialmente unknown = 0.0)                         
         self.log_odds = np.zeros((self.height, self.width), dtype=np.float64)
 
-        #        Cargar PGM del dron como prior                                                                      
+        # Cargar PGM del dron como prior
         if pgm_path and os.path.exists(pgm_path):
+            import yaml
+            yaml_path = pgm_path.replace('.pgm', '.yaml')
+            if os.path.exists(yaml_path):
+                try:
+                    with open(yaml_path, 'r') as f:
+                        map_data = yaml.safe_load(f)
+                        self.pgm_res = map_data.get('resolution', self.pgm_res)
+                        origin = map_data.get('origin', [self.pgm_ox, self.pgm_oy, 0.0])
+                        self.pgm_ox = origin[0]
+                        self.pgm_oy = origin[1]
+                        self.get_logger().info(f"📍 YAML Cargado! Origen PGM ajustado a Y={self.pgm_oy}")
+                except Exception as e:
+                    self.get_logger().error(f"Error cargando YAML: {e}")
             self._load_pgm_prior(pgm_path)
         else:
-            self.get_logger().info('Sin PGM previo. Mapa inicia vac  o (exploraci  n pura).')
+            self.get_logger().info('Sin PGM previo. Mapa inicia vacío (exploración pura).')
 
         #        Suscriptores                                                                                                                            
         qos_scan = QoSProfile(

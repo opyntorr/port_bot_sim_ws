@@ -22,6 +22,13 @@ class GeneradorMapaAruco(Node):
         self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
         self.parameters = cv2.aruco.DetectorParameters_create()
         
+        # GROUND TRUTH DEL LABERINTO:
+        # Medida física real entre los marcadores 0 y 1 (Ancho) y 0 y 3 (Alto).
+        # Para la vida real, saca tu cinta métrica, mide el rectángulo que forman, 
+        # y pon esos valores exactos aquí.
+        self.ancho_real_laberinto_m = 2.80
+        self.alto_real_laberinto_m = 3.40
+        
         # Parámetros Intrínsecos de la cámara del dron (según dronCamara.sdf)
         # width=1280, height=720, hfov=1.4416
         # f = (1280/2) / tan(1.4416/2) ≈ 728.26
@@ -77,31 +84,31 @@ class GeneradorMapaAruco(Node):
                     puntos_src.append(centro)
                     escalas.append(esc)
                 
-                # Promedio de píxeles por cada 0.2 metros
-                px_per_02m_avg = np.mean(escalas)
-                px_per_meter = px_per_02m_avg / 0.2
-                
-                # Calcular distancias reales en metros basándose en los centros
-                dist_01_px = np.linalg.norm(np.array(puntos_src[0]) - np.array(puntos_src[1]))
-                dist_03_px = np.linalg.norm(np.array(puntos_src[0]) - np.array(puntos_src[3]))
-                
-                ancho_m = dist_01_px / px_per_meter
-                alto_m = dist_03_px / px_per_meter
+                # GROUND TRUTH: Usamos las dimensiones físicas reales para forzar 
+                # a la homografía a corregir la perspectiva, eliminando el "escorzo".
+                ancho_m = self.ancho_real_laberinto_m
+                alto_m = self.alto_real_laberinto_m
                 
                 # Definir resolución deseada (1cm/px es estándar y compatible con tu RRT)
                 self.resolucion_m_px = 0.01 
                 
-                width_px = int(ancho_m / self.resolucion_m_px)
-                height_px = int(alto_m / self.resolucion_m_px)
+                # Definir margen exterior de 1.0 metros
+                margen_m = 1.0
+                margen_px = int(margen_m / self.resolucion_m_px)
                 
-                self.get_logger().info(f"📏 Dimensiones detectadas: {ancho_m:.2f}m x {alto_m:.2f}m ({width_px}x{height_px} px)")
+                width_px = int((ancho_m + 2 * margen_m) / self.resolucion_m_px)
+                height_px = int((alto_m + 2 * margen_m) / self.resolucion_m_px)
+                
+                self.get_logger().info(f"📏 Área ArUco: {ancho_m:.2f}m x {alto_m:.2f}m. Mapa total (con margen): {ancho_m+2*margen_m:.2f}m x {alto_m+2*margen_m:.2f}m ({width_px}x{height_px} px)")
 
                 pts_origen = np.array(puntos_src, dtype=np.float32)
+                
+                # Mapear los ArUcos desplazados por el margen
                 pts_destino = np.array([
-                    [0, 0],                                           
-                    [width_px, 0],                      
-                    [width_px, height_px], 
-                    [0, height_px]                       
+                    [margen_px, margen_px],                                           
+                    [margen_px + int(ancho_m / self.resolucion_m_px), margen_px],                      
+                    [margen_px + int(ancho_m / self.resolucion_m_px), margen_px + int(alto_m / self.resolucion_m_px)], 
+                    [margen_px, margen_px + int(alto_m / self.resolucion_m_px)]                       
                 ], dtype=np.float32)
                 
                 # Aplanar y binarizar
@@ -151,7 +158,7 @@ class GeneradorMapaAruco(Node):
                 config_yaml = {
                     'image': 'mapa_laberinto.pgm',
                     'resolution': self.resolucion_m_px,
-                    'origin': [0.0, -alto_m, 0.0],
+                    'origin': [-float(margen_m), -float(alto_m + margen_m), 0.0],
                     'occupied_thresh': 0.65,
                     'free_thresh': 0.196,
                     'negate': 0
