@@ -147,6 +147,7 @@ public:
     
     // Mapa relajado (1/4 de las medidas originales)
     // int relaxed_radius = max(1, static_cast<int>(ceil((robot_radius_m / 4.0) / map_resolution_)));
+    int relaxed_radius = robot_radius;
     Mat kernel_relaxed = getStructuringElement(MORPH_RECT, Size(relaxed_radius * 2, relaxed_radius * 2));
     erode(map_original_, map_relaxed_, kernel_relaxed);
     
