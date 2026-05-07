@@ -139,14 +139,14 @@ public:
 
     flip(temp_map, map_original_, 0);
 
-    // Radio del robot en pixels (0.19m = ~16cm radio + 3cm seguridad)
-    double robot_radius_m = 0.19;
+    // Radio del robot en pixels (parametrizado desde el launch)
+    double robot_radius_m = this->get_parameter_or("robot_radius_m", 0.19);
     int robot_radius = static_cast<int>(ceil(robot_radius_m / map_resolution_));
     Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
     erode(map_original_, map_inflated_, kernel);
     
     // Mapa relajado (1/4 de las medidas originales)
-    // int relaxed_radius = max(1, static_cast<int>(ceil((robot_radius_m / 4.0) / map_resolution_)));
+    int relaxed_radius = max(1, static_cast<int>(ceil((robot_radius_m / 4.0) / map_resolution_)));
     Mat kernel_relaxed = getStructuringElement(MORPH_RECT, Size(relaxed_radius * 2, relaxed_radius * 2));
     erode(map_original_, map_relaxed_, kernel_relaxed);
     
@@ -154,24 +154,35 @@ public:
     RCLCPP_INFO(this->get_logger(), "Mapa inflado (radio=%d px = %.2f m).", robot_radius, robot_radius_m);
   }
 
-  void publishPath(const vector<Point>& cv_path) {
+  void publishPath(const vector<Point>& cv_path, double theta_goal = 0.0) {
     nav_msgs::msg::Path ros_path;
     ros_path.header.stamp = this->get_clock()->now();
     ros_path.header.frame_id = "map";
 
-    for (const auto& p : cv_path) {
+    for (size_t i = 0; i < cv_path.size(); i++) {
       geometry_msgs::msg::PoseStamped pose;
       double x_m, y_m;
-      pixel_to_world(p, x_m, y_m);
+      pixel_to_world(cv_path[i], x_m, y_m);
 
       pose.pose.position.x = x_m;
       pose.pose.position.y = y_m;
       pose.pose.position.z = 0.0;
+
+      // Incluir orientacion objetivo en el ultimo punto
+      if (i == cv_path.size() - 1) {
+        tf2::Quaternion q_goal;
+        q_goal.setRPY(0, 0, theta_goal);
+        pose.pose.orientation.x = q_goal.x();
+        pose.pose.orientation.y = q_goal.y();
+        pose.pose.orientation.z = q_goal.z();
+        pose.pose.orientation.w = q_goal.w();
+      }
+
       ros_path.poses.push_back(pose);
     }
 
     path_pub_->publish(ros_path);
-    RCLCPP_INFO(this->get_logger(), "Ruta RRT publicada (%zu puntos).", cv_path.size());
+    RCLCPP_INFO(this->get_logger(), "Ruta RRT publicada (%zu puntos, yaw_goal=%.1f deg).", cv_path.size(), theta_goal * 180.0 / M_PI);
   }
 
 private:
@@ -183,6 +194,7 @@ private:
   double map_origin_x_ = 0.0;
   double map_origin_y_ = 0.0;
   int map_height_ = 0;
+  double ros_yaw_goal_ = 0.0;  // Orientacion objetivo en frame ROS (para publicar en el Path)
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr replan_sub_;
@@ -267,6 +279,7 @@ private:
     double rg, pg, y_goal;
     m_goal.getRPY(rg, pg, y_goal);
     double theta_goal = -y_goal;
+    ros_yaw_goal_ = y_goal;  // Guardar yaw original ROS para publicar en el Path
 
     // Bucle de intentos
     bool success = false;
@@ -285,29 +298,24 @@ private:
 
   bool compute_rrt(Point start, double theta_start, Point goal, double theta_goal, const Mat& map_in, bool is_relaxed) {
     Mat working_map = map_in.clone();
-    // Despejar el área inicial del robot para permitir que el planificador 
-    // encuentre una salida si el robot ya rozó la zona inflada de un obstáculo
+    // Despejar el area inicial del robot para permitir que el planificador 
+    // encuentre una salida si el robot ya rozo la zona inflada de un obstaculo
     int escape_radius = static_cast<int>(ceil(0.20 / map_resolution_));
     circle(working_map, start, escape_radius, Scalar(255), -1);
 
-    // Para la meta, mantenemos una aproximación direccional suave
-    int vector_len = max(2, static_cast<int>(0.20 / map_resolution_)); // ~20cm
-    Point goal_app(goal.x - vector_len * cos(theta_goal), goal.y - vector_len * sin(theta_goal));
-
+    // Verificar que la meta no esta en colision
     bool goal_coll = check_collision(working_map, goal, goal);
-    bool goal_app_coll = check_collision(working_map, goal_app, goal);
-
-    if (goal_coll || goal_app_coll) {
+    if (goal_coll) {
       if (!is_relaxed) {
-        RCLCPP_WARN(this->get_logger(), "Error de colisión en la META (mapa inflado).");
+        RCLCPP_WARN(this->get_logger(), "Error de colision en la META (mapa inflado).");
       } else {
-        RCLCPP_ERROR(this->get_logger(), "Error de colisión en la META incluso con mapa relajado.");
+        RCLCPP_ERROR(this->get_logger(), "Error de colision en la META incluso con mapa relajado.");
       }
       return false;
     }
 
     vector<RRTNode> tree;
-    // Empezar directamente desde el centro del robot, permitiendo que gire sobre su eje si está trabado
+    // Empezar directamente desde el centro del robot
     tree.push_back(RRTNode(start, -1));
 
     int step_size = max(2, static_cast<int>(0.15 / map_resolution_)); // ~15cm
@@ -328,10 +336,10 @@ private:
 
     circle(map_color, start, 5, Scalar(0, 255, 0), -1);
     circle(map_color, goal, 5, Scalar(255, 0, 0), -1);
-    arrowedLine(map_color, goal_app, goal, Scalar(0, 255, 255), 2);
 
     for (int i = 0; i < max_iter; i++) {
-      Point random_point = (distProb(gen) < 0.1) ? goal_app : Point(distX(gen), distY(gen));
+      // Sesgo del 10% hacia la meta directamente (sin punto de aproximacion)
+      Point random_point = (distProb(gen) < 0.1) ? goal : Point(distX(gen), distY(gen));
 
       int nearest_idx = 0;
       double min_dist = get_dist(tree[0].pos, random_point);
@@ -355,9 +363,9 @@ private:
         tree.push_back(RRTNode(new_point, nearest_idx));
         line(map_color, nearest_point, new_point, Scalar(255, 220, 220), 1);
 
-        if (get_dist(new_point, goal_app) <= goal_margin) {
-          if (!check_collision(working_map, new_point, goal_app)) {
-            tree.push_back(RRTNode(goal_app, tree.size() - 1));
+        if (get_dist(new_point, goal) <= goal_margin) {
+          if (!check_collision(working_map, new_point, goal)) {
+            tree.push_back(RRTNode(goal, tree.size() - 1));
             last_node_id = tree.size() - 1;
             goal_reached = true;
             RCLCPP_INFO(this->get_logger(), "Meta encontrada en %d iteraciones!", i);
@@ -390,7 +398,7 @@ private:
         circle(map_color, final_path[i], 3, Scalar(0, 0, 0), -1);
       }
 
-      publishPath(final_path);
+      publishPath(final_path, ros_yaw_goal_);
 
       // Usar _imwrite_ para que la visualizacion no bloquee el hilo de ROS 2 si no se cierra CV
       imwrite("resultado_rrt_pro.png", map_color);

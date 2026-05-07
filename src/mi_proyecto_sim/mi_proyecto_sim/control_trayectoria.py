@@ -69,10 +69,12 @@ class ControlTrayectoria(Node):
         self.current_target_index = 0
         self.ruta_completada = False
         self.pure_rotation_mode = False
+        self.final_rotation_mode = False  # Fase de alineamiento final en la meta
+        self.goal_yaw = None  # Orientacion objetivo (se extrae del ultimo punto del Path)
         
         # Variables para replanificación automática (Watchdog)
         self.replan_pub = self.create_publisher(Empty, '/replan_request', 10)
-        self.last_advance_time = self.get_clock().now()
+        self.last_advance_time = None  # Se inicializa cuando el reloj es válido
         self.last_target_index = 0
         self.replan_cooldown = 2.0 # Segundos de espera mínima entre peticiones
         self.odom_offset_x = 0.0
@@ -80,8 +82,11 @@ class ControlTrayectoria(Node):
         self.odom_offset_theta = 0.0
         self.last_aruco_timestamp = None
         self.first_aruco_received = False
-        self.start_time = self.get_clock().now()
+        self.start_time = None  # Se inicializa cuando el reloj es válido
         self.forced_odom_start = False
+        
+        # Guard: esperar a que use_sim_time reciba /clock válido antes de operar
+        self._clock_initialized = False
         
         # Estado del LiDAR y evasión
         self.repulsion_x = 0.0
@@ -92,7 +97,7 @@ class ControlTrayectoria(Node):
         self.umbral_frontal = 0.35 
         self.umbral_lateral = 0.25 
         
-        self.last_log_time = self.get_clock().now() 
+        self.last_log_time = None  # Se inicializa cuando el reloj es válido
 
         
         qos_scan = QoSProfile(
@@ -112,10 +117,24 @@ class ControlTrayectoria(Node):
             x = pose_stamped.pose.position.x
             y = pose_stamped.pose.position.y
             self.path_points.append((x, y))
+        
+        # Extraer orientacion del ultimo punto (publicada por el planificador RRT)
+        if msg.poses:
+            last_pose = msg.poses[-1].pose
+            q = last_pose.orientation
+            # Solo usar si el cuaternion no es identidad (tiene orientacion valida)
+            if abs(q.x) > 1e-6 or abs(q.y) > 1e-6 or abs(q.z) > 1e-6:
+                siny = 2.0 * (q.w * q.z + q.x * q.y)
+                cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+                self.goal_yaw = math.atan2(siny, cosy)
+                self.get_logger().info(f"Orientacion objetivo: {math.degrees(self.goal_yaw):.1f} grados")
+            else:
+                self.goal_yaw = None
             
         self.current_target_index = 0
         self.ruta_completada = False
         self.pure_rotation_mode = True  # Iniciar cada nueva ruta girando hacia el objetivo
+        self.final_rotation_mode = False
 
     def odom_callback(self, msg):
         """Lectura de Odometría estándar Yahboom (msg.pose.pose)."""
@@ -210,7 +229,7 @@ class ControlTrayectoria(Node):
         
         # LOG DE DIAGNÓSTICO CADA SEGUNDO
         now = self.get_clock().now()
-        if (now - self.last_log_time).nanoseconds / 1e9 > 1.0:
+        if self.last_log_time is not None and (now - self.last_log_time).nanoseconds / 1e9 > 1.0:
             if not obstaculo:
                  self.get_logger().info(f"LIDAR: Camino despejado. Min Frontal: {self.min_dist_frontal:.2f}m")
             else:
@@ -299,7 +318,7 @@ class ControlTrayectoria(Node):
 
         # DIAGNOSTICOS: Informar por qué no tenemos pose todavía
         now = self.get_clock().now()
-        if (now - self.last_log_time).nanoseconds / 1e9 > 5.0:
+        if self.last_log_time is not None and (now - self.last_log_time).nanoseconds / 1e9 > 5.0:
             if x_o is None:
                 self.get_logger().info("Esperando datos de odometría en /odom...")
             else:
@@ -346,6 +365,19 @@ class ControlTrayectoria(Node):
         self.cmd_pub.publish(cmd)
 
     def control_loop(self):
+        # Guard: esperar a que el reloj de simulación sea válido (>0)
+        # Esto evita que los timestamps se inicialicen en time=0 antes de que
+        # Gazebo publique /clock, causando falsos timeouts en la primera ejecución.
+        if not self._clock_initialized:
+            now = self.get_clock().now()
+            if now.nanoseconds == 0:
+                return
+            self.start_time = now
+            self.last_advance_time = now
+            self.last_log_time = now
+            self._clock_initialized = True
+            self.get_logger().info('Reloj de simulación válido. Control listo.')
+        
         if not self.path_points or self.ruta_completada:
             return
         x, y, theta = self.get_current_pose()
@@ -359,10 +391,31 @@ class ControlTrayectoria(Node):
         if not target:
             return
         x_d, y_d = target
-        # Evaluar si llegamos al destino final
-        dist_to_final = math.hypot(self.path_points[-1][0] - x_c, self.path_points[-1][1] - y_c)
-        if self.current_target_index == len(self.path_points) - 1 and dist_to_final < 0.15:
-            self.get_logger().info("¡Llegamos a la meta!")
+        # Evaluar si llegamos al destino final (threshold mas estricto que waypoints intermedios)
+        dist_to_final = math.hypot(self.path_points[-1][0] - x, self.path_points[-1][1] - y)
+        if self.current_target_index == len(self.path_points) - 1 and dist_to_final < 0.08:
+            # Fase de alineamiento final: girar hasta la orientacion del objetivo
+            if self.goal_yaw is not None and not self.final_rotation_mode:
+                self.final_rotation_mode = True
+                self.get_logger().info(f"Posicion alcanzada. Alineando a {math.degrees(self.goal_yaw):.1f} grados...")
+            
+            if self.final_rotation_mode and self.goal_yaw is not None:
+                e_theta = self.goal_yaw - theta
+                while e_theta > math.pi: e_theta -= 2.0 * math.pi
+                while e_theta < -math.pi: e_theta += 2.0 * math.pi
+                
+                if abs(e_theta) > 0.05:  # ~3 grados de tolerancia
+                    cmd = Twist()
+                    cmd.angular.z = 1.2 * e_theta
+                    if abs(cmd.angular.z) < 0.3:
+                        cmd.angular.z = 0.3 if e_theta > 0 else -0.3
+                    cmd.angular.z = max(min(cmd.angular.z, self.w_max), -self.w_max)
+                    self.cmd_pub.publish(cmd)
+                    return
+                else:
+                    self.get_logger().info("Orientacion final alcanzada.")
+            
+            self.get_logger().info("Meta alcanzada con precision.")
             self.stop_robot()
             self.ruta_completada = True
             return
@@ -375,20 +428,22 @@ class ControlTrayectoria(Node):
             self.get_logger().info(f"Seguimiento: {self.current_target_index + 1}/{len(self.path_points)} ({percent:.1f}%) | V: {self.v_prev:.2f} W: {self.w_prev:.2f}")
             self.last_log_time = now
 
-        # 4. Watchdog: Si no avanzamos de punto en 6 segundos, replanificar
+        # 4. Watchdog: Si no avanzamos de punto en 4 segundos, replanificar
+        # EXCEPCION: No replanificar si ya estamos cerca de la meta final
+        near_final_goal = (self.current_target_index >= len(self.path_points) - 2 and dist_to_final < 0.25)
         now = self.get_clock().now()
         
-        # LOG DE PULSO VITAL: Ángulo actual crudo (para ver si se mueve)
+        # LOG DE PULSO VITAL: Angulo actual crudo (para ver si se mueve)
         if (now - self.last_log_time).nanoseconds / 1e9 > 1.0:
-             self.get_logger().info(f"[DIAGNÓSTICO] ÁNGULO CRUDO ODOM: {math.degrees(theta):.2f}º")
+             self.get_logger().info(f"[DIAGNOSTICO] ANGULO CRUDO ODOM: {math.degrees(theta):.2f} | Dist meta: {dist_to_final:.3f}m")
         
         if self.current_target_index > self.last_target_index:
             self.last_target_index = self.current_target_index
             self.last_advance_time = now
         else:
             elapsed = (now - self.last_advance_time).nanoseconds / 1e9
-            if elapsed > 4.0:
-                self.get_logger().warn("¡Bloqueo detectado! No se avanza de waypoint en 8s. Solicitando replanificación...")
+            if elapsed > 4.0 and not near_final_goal:
+                self.get_logger().warn("Bloqueo detectado! No se avanza de waypoint en 4s. Solicitando replanificacion...")
                 self.replan_pub.publish(Empty())
                 self.last_advance_time = now # Reset para no saturar mientras llega la nueva ruta
 
