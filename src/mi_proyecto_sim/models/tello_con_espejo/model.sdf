@@ -1,0 +1,69 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <model name="tello_con_espejo">
+    <include>
+      <uri>model://tello</uri>
+      <name>tello_base</name>
+    </include>
+
+    <!-- Enlace para el Espejo a 45 grados y la Camara Virtual -->
+    <link name="espejo_link">
+      <!-- El link en sí está en el centro exacto para no desequilibrar el dron -->
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <mass>1e-6</mass>
+        <inertia>
+          <ixx>1e-6</ixx>
+          <iyy>1e-6</iyy>
+          <izz>1e-6</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="espejo_visual">
+        <!-- El offset visual se aplica aquí -->
+        <pose>0.05 0 0.01 0 0.785398 0</pose>
+        <geometry>
+          <box>
+            <size>0.02 0.04 0.002</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.8 0.8 0.8 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+
+      <!-- Camara Virtual que simula la vista a traves del espejo (apunta hacia abajo) -->
+      <sensor name="camera_espejo" type="camera">
+        <!-- Desplazar el sensor un poco hacia adelante y abajo para evitar que el propio dron tape la vista -->
+        <!-- Pitch de 90 grados (1.570796 rad) para que mire completamente hacia abajo -->
+        <pose>0.1 0 -0.05 0 1.570796 0</pose>
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+        <visualize>true</visualize>
+        <!-- Publica en el topico original que espera el detector ArUco -->
+        <topic>/uav/camera/image</topic>
+        <camera>
+          <horizontal_fov>1.4416</horizontal_fov>
+          <image>
+            <width>1280</width>
+            <height>720</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>300</far>
+          </clip>
+        </camera>
+      </sensor>
+    </link>
+
+    <!-- Union Fija entre el Dron y el Espejo -->
+    <joint name="espejo_joint" type="fixed">
+      <parent>tello_base::base_link</parent>
+      <child>espejo_link</child>
+    </joint>
+  </model>
+</sdf>

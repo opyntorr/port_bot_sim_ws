@@ -19,16 +19,21 @@ def generate_launch_description():
     rviz_config = os.path.join(pkg_sim, 'rviz', 'configuracion.rviz')
 
 
+    tello_models_dir = os.path.join(ws_root, 'src', 'demo_tello_sim', 'src', 'tello-ros2-gazebo-master', 'tello_ros', 'tello_gazebo', 'models')
+    tello_espejo_sdf = os.path.join(models_dir, 'tello_con_espejo', 'model.sdf')
+
     # 1. Variables de entorno para que Gazebo encuentre los modelos
     set_env = SetEnvironmentVariable(
         name='IGN_GAZEBO_RESOURCE_PATH',
-        value=models_dir
+        value=f"{models_dir}:{tello_models_dir}"
     )
 
+    tello_lib_dir = os.path.join(ws_root, 'install', 'tello_gazebo', 'lib')
+    
     # Añadir la ruta de los plugins de ROS 2 a Gazebo
     plugin_env = AppendEnvironmentVariable(
         name='IGN_GAZEBO_SYSTEM_PLUGIN_PATH',
-        value='/opt/ros/humble/lib'
+        value=f"/opt/ros/humble/lib:{tello_lib_dir}"
     )
 
     # 2. Lanzar Gazebo sin pausa
@@ -43,7 +48,8 @@ def generate_launch_description():
         executable='parameter_bridge',
         arguments=[
             '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock', # <--- ¡EL RELOJ!
-            '/uav/camera/image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/uav/camera/image@sensor_msgs/msg/Image[ignition.msgs.Image', # Camara del espejo del dron
+            '/drone1/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist', # Control del dron
             '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
             '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
             '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image',
@@ -105,6 +111,20 @@ def generate_launch_description():
             
             # --- ORIENTACIÓN (Añadir esto) ---
             '-Y', '-1.5708' # Orientación (Yaw) en radianes. 
+        ],
+        output='screen'
+    )
+
+    # 6b. Gazebo Spawner Dron
+    spawner_dron = Node(
+        package='ros_gz_sim',
+        executable='create',
+        arguments=[
+            '-name', 'drone1',
+            '-file', tello_espejo_sdf,
+            '-x', '0.0',
+            '-y', '0.0',
+            '-z', '1.0'
         ],
         output='screen'
     )
@@ -270,6 +290,7 @@ def generate_launch_description():
         visor_carrito,
         robot_state_publisher,
         spawner,
+        spawner_dron,
         rviz_node,
         joy_node,
         teleop,

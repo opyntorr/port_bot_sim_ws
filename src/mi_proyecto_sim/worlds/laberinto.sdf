@@ -58,10 +58,7 @@
       </link>
     </model>
 
-    <include>
-      <uri>file://dronCamara.sdf</uri>
-      <pose>0 0 4.5 0 0 0</pose>
-    </include>
+
 
     <include>
       <name>aruco_0</name>

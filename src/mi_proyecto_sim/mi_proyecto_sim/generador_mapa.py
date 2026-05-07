@@ -19,8 +19,14 @@ class GeneradorMapaAruco(Node):
         self.subscription = self.create_subscription(Image, '/uav/camera/image', self.image_callback, 10)
         self.bridge = CvBridge()
         
-        self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
-        self.parameters = cv2.aruco.DetectorParameters_create()
+        try:
+            self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+            self.parameters = cv2.aruco.DetectorParameters_create()
+            self.detector = None
+        except AttributeError:
+            self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+            self.parameters = cv2.aruco.DetectorParameters()
+            self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
         
         # GROUND TRUTH DEL LABERINTO:
         # Medida física real entre los marcadores 0 y 1 (Ancho) y 0 y 3 (Alto).
@@ -63,7 +69,10 @@ class GeneradorMapaAruco(Node):
         # NUEVO: Corregir distorsión de la lente antes de detectar nada
         cv_image = cv2.undistort(raw_image, self.K, self.D)
         
-        corners, ids, rejected = cv2.aruco.detectMarkers(cv_image, self.aruco_dict, parameters=self.parameters)
+        if self.detector is not None:
+            corners, ids, rejected = self.detector.detectMarkers(cv_image)
+        else:
+            corners, ids, rejected = cv2.aruco.detectMarkers(cv_image, self.aruco_dict, parameters=self.parameters)
         
         if ids is not None:
             ids_detectados = [i[0] for i in ids]

@@ -22,8 +22,14 @@ class ArucoSlamTf(Node):
         # Broadcaster Estático: Lo que publiques aquí se queda para siempre en el árbol de TF
         self.tf_static_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
         
-        self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
-        self.parameters = cv2.aruco.DetectorParameters_create()
+        try:
+            self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+            self.parameters = cv2.aruco.DetectorParameters_create()
+            self.detector = None
+        except AttributeError:
+            self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+            self.parameters = cv2.aruco.DetectorParameters()
+            self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
         
         self.snapshot_tomado = False
         self.last_log_time = self.get_clock().now()
@@ -52,7 +58,11 @@ class ArucoSlamTf(Node):
 
     def image_callback(self, msg):
         cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        corners, ids, rejected = cv2.aruco.detectMarkers(cv_image, self.aruco_dict, parameters=self.parameters)
+        
+        if self.detector is not None:
+            corners, ids, rejected = self.detector.detectMarkers(cv_image)
+        else:
+            corners, ids, rejected = cv2.aruco.detectMarkers(cv_image, self.aruco_dict, parameters=self.parameters)
         
         now = self.get_clock().now()
         if ids is not None:
