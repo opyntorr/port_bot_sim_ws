@@ -149,7 +149,11 @@ def generate_launch_description():
         executable='detector_aruco.py',
         name='detector_aruco',
         output='screen',
-        parameters=[{'use_sim_time': True}]  # <--- ¡DESCOMENTADO! Fundamental para las coordenadas 3D
+        parameters=[{
+            'use_sim_time': True,
+            'aruco_size_m': 0.12,
+            'tamano_pixel_mapa': 440,
+        }]
     )
 
     # TF estática por defecto: map → odom (identidad).
@@ -248,7 +252,10 @@ def generate_launch_description():
         executable='planificador_rrt',
         name='planificador_rrt',
         output='screen',
-        parameters=[{'use_sim_time': True}]
+        parameters=[{
+            'use_sim_time': True,
+            'robot_radius_m': 0.19,
+        }]
     )
     
     # ... y recuerda añadir 'planificador_node' al final en el LaunchDescription

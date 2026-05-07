@@ -41,7 +41,7 @@ class GeneradorMapaAruco(Node):
         # Coeficientes de distorsión [k1, k2, p1, p2, k3]
         self.D = np.array([-0.05, 0.01, 0.0, 0.0, 0.0], dtype=np.float32)
 
-        self.get_logger().info("📸 Esperando la 'foto perfecta' con TODOS los marcadores (0, 1, 2, 3, 4 y 5)...")
+        self.get_logger().info("Esperando la 'foto perfecta' con TODOS los marcadores (0, 1, 2, 3, 4 y 5)...")
 
     def obtener_centro_y_escala(self, corners):
         puntos = np.array(corners).reshape((4, 2))
@@ -74,7 +74,7 @@ class GeneradorMapaAruco(Node):
             ids_necesarios = [0, 1, 2, 3, 4, 5]
             
             if all(marcador in ids_detectados for marcador in ids_necesarios):
-                self.get_logger().info("✅ ¡Los 6 marcadores detectados simultáneamente! Procesando...")
+                self.get_logger().info("¡Los 6 marcadores detectados simultáneamente! Procesando...")
                 
                 puntos_src = []
                 escalas = []
@@ -99,7 +99,7 @@ class GeneradorMapaAruco(Node):
                 width_px = int((ancho_m + 2 * margen_m) / self.resolucion_m_px)
                 height_px = int((alto_m + 2 * margen_m) / self.resolucion_m_px)
                 
-                self.get_logger().info(f"📏 Área ArUco: {ancho_m:.2f}m x {alto_m:.2f}m. Mapa total (con margen): {ancho_m+2*margen_m:.2f}m x {alto_m+2*margen_m:.2f}m ({width_px}x{height_px} px)")
+                self.get_logger().info(f"Área ArUco: {ancho_m:.2f}m x {alto_m:.2f}m. Mapa total (con margen): {ancho_m+2*margen_m:.2f}m x {alto_m+2*margen_m:.2f}m ({width_px}x{height_px} px)")
 
                 pts_origen = np.array(puntos_src, dtype=np.float32)
                 
@@ -135,7 +135,7 @@ class GeneradorMapaAruco(Node):
                         centro_y_mapa = int(punto_plano_3d[0][0][1])
                         
                         cv2.circle(mapa_binario, (centro_x_mapa, centro_y_mapa), radio_borrado_px, 255, -1)
-                        self.get_logger().info(f"✨ Mancha del ID {curr_id} eliminada con éxito.")
+                        self.get_logger().info(f"Mancha del ID {curr_id} eliminada con éxito.")
                 
                 # Guardar archivos en la carpeta de mapas del paquete
                 try:
@@ -167,7 +167,7 @@ class GeneradorMapaAruco(Node):
                     yaml.dump(config_yaml, f, default_flow_style=False)
                 
                 # NUEVO: Pedirle al Map Server que recargue el mapa en caliente
-                self.get_logger().info("🔄 Solicitando recarga del mapa al Map Server...")
+                self.get_logger().info("Solicitando recarga del mapa al Map Server...")
                 cli = self.create_client(LoadMap, '/map_server/load_map')
                 while not cli.wait_for_service(timeout_sec=1.0):
                     self.get_logger().info('Servicio /map_server/load_map no disponible, esperando...')
@@ -176,7 +176,7 @@ class GeneradorMapaAruco(Node):
                 req.map_url = path_yaml
                 cli.call_async(req)
                 
-                self.get_logger().info(f"🎉 ¡Mapa estático LIMPIO generado y recarga solicitada!")
+                self.get_logger().info(f"¡Mapa estático LIMPIO generado y recarga solicitada!")
                 raise SystemExit
 
 def main(args=None):

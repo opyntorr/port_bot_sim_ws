@@ -28,11 +28,14 @@ class ArucoSlamTf(Node):
         self.snapshot_tomado = False
         self.last_log_time = self.get_clock().now()
         
-        self.get_logger().info("📸 Iniciando detector ArUco. Esperando a ver los marcadores (0-5)...")
-
-
-        # Medidas de nuestro mapa aplanado
-        self.tamano_pixel_mapa = 440
+        # Parámetros configurables desde el launch
+        self.declare_parameter('aruco_size_m', 0.12)
+        self.declare_parameter('tamano_pixel_mapa', 440)
+        
+        self.aruco_size_m = self.get_parameter('aruco_size_m').value
+        self.tamano_pixel_mapa = self.get_parameter('tamano_pixel_mapa').value
+        
+        self.get_logger().info(f"📸 Iniciando detector ArUco (tamaño={self.aruco_size_m}m, mapa={self.tamano_pixel_mapa}px). Esperando marcadores (0-5)...")
 
 
 
@@ -103,8 +106,8 @@ class ArucoSlamTf(Node):
                 # Alto en píxeles (distancia entre esquina sup-der e inf-der)
                 h_px = np.linalg.norm(esquinas_m0_plano[1] - esquinas_m0_plano[2])
                 
-                # Tamaño real del marcador: 12 cm (0.12 m)
-                tamano_real_aruco = 0.12
+                # Tamaño real del marcador (parametrizado desde el launch)
+                tamano_real_aruco = self.aruco_size_m
                 res_x = tamano_real_aruco / w_px
                 res_y = tamano_real_aruco / h_px
                 
