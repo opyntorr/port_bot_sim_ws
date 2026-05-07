@@ -1,7 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
 from launch_ros.actions import Node
 from launch.substitutions import Command
 from launch_ros.parameter_descriptions import ParameterValue
@@ -171,8 +172,10 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'aruco_size_m': 0.12,
+            'aruco_size_m': 0.11,
             'tamano_pixel_mapa': 440,
+            'ancho_laberinto_m': 2.65,
+            'alto_laberinto_m': 3.10,
         }]
     )
 
@@ -266,6 +269,18 @@ def generate_launch_description():
     #     parameters=[{'use_sim_time': True}]
     # )
 
+    # Generador de Mapa
+    generador_mapa_node = Node(
+        package='mi_proyecto_sim',
+        executable='generador_mapa.py',
+        name='generador_mapa',
+        output='screen',
+        parameters=[{
+            'ancho_laberinto_m': 2.50, # Ancho entre ArUcos (metros)
+            'alto_laberinto_m': 3.10,  # Alto entre ArUcos (metros)
+        }]
+    )
+
     # Nodo de Planificación RRT
     planificador_rrt_node = Node(
         package='mi_proyecto_sim',
@@ -279,6 +294,17 @@ def generate_launch_description():
     )
     
     # ... y recuerda añadir 'planificador_node' al final en el LaunchDescription
+
+    # Event handler para retrasar RRT y SLAM hasta que el mapa se genere
+    rrt_y_slam_handler = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=generador_mapa_node,
+            on_exit=[
+                slam_occupancy_grid_node,
+                planificador_rrt_node
+            ]
+        )
+    )
 
     # Empaquetar y lanzar todo simultáneamente
     return LaunchDescription([
@@ -298,9 +324,9 @@ def generate_launch_description():
         static_map_to_odom,          # Puente TF: map → odom (identidad por defecto)
         # map_server_node,        # Reemplazado por slam_occupancy_grid
         # lifecycle_manager_node, # Ya no se necesita
-        planificador_rrt_node,
         filtro_lidar_node,
-        slam_occupancy_grid_node, # Fusión Dron + LiDAR
+        generador_mapa_node,
+        rrt_y_slam_handler,
         # slam_node,              # Reemplazado por slam_occupancy_grid
     ])
 

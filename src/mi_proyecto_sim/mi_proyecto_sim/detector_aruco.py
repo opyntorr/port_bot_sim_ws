@@ -37,9 +37,13 @@ class ArucoSlamTf(Node):
         # Parámetros configurables desde el launch
         self.declare_parameter('aruco_size_m', 0.12)
         self.declare_parameter('tamano_pixel_mapa', 440)
+        self.declare_parameter('ancho_laberinto_m', 2.80)
+        self.declare_parameter('alto_laberinto_m', 3.40)
         
         self.aruco_size_m = self.get_parameter('aruco_size_m').value
         self.tamano_pixel_mapa = self.get_parameter('tamano_pixel_mapa').value
+        self.ancho_m = self.get_parameter('ancho_laberinto_m').value
+        self.alto_m = self.get_parameter('alto_laberinto_m').value
         
         self.get_logger().info(f"📸 Iniciando detector ArUco (tamaño={self.aruco_size_m}m, mapa={self.tamano_pixel_mapa}px). Esperando marcadores (0-5)...")
 
@@ -96,11 +100,14 @@ class ArucoSlamTf(Node):
                 S0 = tamanos_raw[0]
 
                 pts_origen = np.array(puntos_src, dtype=np.float32)
+                # Evitamos aplastar el eje Y calculando los píxeles proporcionales al alto físico
+                alto_px = self.tamano_pixel_mapa * (self.alto_m / self.ancho_m)
+                
                 pts_destino = np.array([
                     [0, 0],
                     [self.tamano_pixel_mapa, 0],
-                    [self.tamano_pixel_mapa, self.tamano_pixel_mapa],
-                    [0, self.tamano_pixel_mapa]
+                    [self.tamano_pixel_mapa, alto_px],
+                    [0, alto_px]
                 ], dtype=np.float32)
 
                 matriz_homografia = cv2.getPerspectiveTransform(pts_origen, pts_destino)
