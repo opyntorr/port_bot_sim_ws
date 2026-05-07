@@ -29,11 +29,11 @@ class GeneradorMapaAruco(Node):
             self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.parameters)
         
         # GROUND TRUTH DEL LABERINTO:
-        # Medida física real entre los marcadores 0 y 1 (Ancho) y 0 y 3 (Alto).
-        # Para la vida real, saca tu cinta métrica, mide el rectángulo que forman, 
-        # y pon esos valores exactos aquí.
-        self.ancho_real_laberinto_m = 2.80
-        self.alto_real_laberinto_m = 3.40
+        self.declare_parameter('ancho_laberinto_m', 2.80)
+        self.declare_parameter('alto_laberinto_m', 3.40)
+        
+        self.ancho_real_laberinto_m = self.get_parameter('ancho_laberinto_m').get_parameter_value().double_value
+        self.alto_real_laberinto_m = self.get_parameter('alto_laberinto_m').get_parameter_value().double_value
         
         # Parámetros Intrínsecos de la cámara del dron (según dronCamara.sdf)
         # width=1280, height=720, hfov=1.4416
@@ -175,17 +175,7 @@ class GeneradorMapaAruco(Node):
                 with open(path_yaml, 'w') as f:
                     yaml.dump(config_yaml, f, default_flow_style=False)
                 
-                # NUEVO: Pedirle al Map Server que recargue el mapa en caliente
-                self.get_logger().info("Solicitando recarga del mapa al Map Server...")
-                cli = self.create_client(LoadMap, '/map_server/load_map')
-                while not cli.wait_for_service(timeout_sec=1.0):
-                    self.get_logger().info('Servicio /map_server/load_map no disponible, esperando...')
-                
-                req = LoadMap.Request()
-                req.map_url = path_yaml
-                cli.call_async(req)
-                
-                self.get_logger().info(f"¡Mapa estático LIMPIO generado y recarga solicitada!")
+                self.get_logger().info(f"¡Mapa estático LIMPIO generado exitosamente!")
                 raise SystemExit
 
 def main(args=None):
