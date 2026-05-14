@@ -14,12 +14,17 @@ Uso:
   ros2 launch mi_proyecto_sim mision_dron_real.launch.py tello_ip:=192.168.10.1
 """
 import os
+from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+_TELLO_SHARE = Path(get_package_share_directory('tello'))
+_OST_YAML = str(_TELLO_SHARE / 'ost.yaml')
 
 
 def generate_launch_description():
@@ -36,7 +41,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             {'tello_ip': tello_ip},
-            {'camera_info_file': '/ros2_ws/src/demo_tello_sim/src/tello-ros2-main/workspace/src/tello/resource/ost.yaml'}
+            {'camera_info_file': _OST_YAML}
         ],
         remappings=[
             ('image_raw', '/image_raw'),
