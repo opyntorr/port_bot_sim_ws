@@ -7,6 +7,7 @@ ArUcos del carrito (id 4) y meta (id 5) en la imagen stitcheada.
 Mapa generado: 3.9m x 3.9m con origen en el centro de la imagen.
 """
 
+import json
 import math
 import subprocess
 from datetime import datetime
@@ -16,6 +17,7 @@ import cv2
 import numpy as np
 import rclpy
 import yaml
+from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, TransformStamped
 from nav_msgs.msg import Odometry
@@ -33,7 +35,7 @@ except ImportError:
 
 # Patron serpiente en grid 3x3 (todos a z=2.5m). Spacing 1.3m para ~60% overlap.
 # Cobertura: -1.3m a 1.3m en X e Y.
-_Z = 2.5
+_Z = 2
 _COLS = [-1.3, 0.0, 1.3]
 _ROWS = [1.3, 0.0, -1.3]
 WAYPOINTS = []
@@ -50,7 +52,17 @@ POS_TOL = 0.25
 POS_TOL_EXIT = 0.50   # hysteresis: solo reinicia el temporizador si se aleja más de esto
 SETTLE_TIME = 1.5
 
-WS_ROOT = Path('/ros2_ws')
+
+def _find_ws_root() -> Path:
+    """Devuelve la raíz del workspace: /ros2_ws en Docker, o se deriva del share dir en el host."""
+    docker = Path('/ros2_ws')
+    if docker.exists():
+        return docker
+    # share dir: <ws>/install/<pkg>/share/<pkg>  → parents[3] == <ws>
+    return Path(get_package_share_directory('mi_proyecto_sim')).parents[3]
+
+
+WS_ROOT = _find_ws_root()
 STITCH_SCRIPT = WS_ROOT / 'src' / 'demo_tello_sim' / 'camera_calibration' / 'stitch_images.py'
 MAPS_DIR = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'maps'
 
@@ -233,13 +245,61 @@ class MisionDron(Node):
 
     def _save_photo(self, idx):
         if self.latest_image is None:
-            self.get_logger().warn(f'No hay imagen para WP {idx}')
+            self.get_logger().warn(f'[WP{idx}] Sin imagen disponible — foto no guardada')
             return
-        img = self.bridge.imgmsg_to_cv2(self.latest_image, 'bgr8')
+
+        # Decodificar imagen
+        try:
+            img = self.bridge.imgmsg_to_cv2(self.latest_image, 'bgr8')
+        except Exception as exc:
+            self.get_logger().error(f'[WP{idx}] Error decodificando imagen: {exc}')
+            return
+
+        h, w = img.shape[:2]
+        self.get_logger().info(f'[WP{idx}] Imagen capturada: {w}x{h} px')
+
+        # Guardar PNG
         path = self.fotos_dir / f'wp_{idx:02d}.png'
-        cv2.imwrite(str(path), img)
-        x, y, z = WAYPOINTS[idx]
-        self.get_logger().info(f'Foto WP{idx} @ ({x:+.1f},{y:+.1f},{z}) -> {path.name}')
+        ok = cv2.imwrite(str(path), img)
+        if ok:
+            size_kb = path.stat().st_size / 1024
+            self.get_logger().info(f'[WP{idx}] PNG guardado: {path.name} ({size_kb:.1f} KB)')
+        else:
+            self.get_logger().error(f'[WP{idx}] cv2.imwrite falló — foto NO guardada en {path}')
+            return
+
+        # Pose: pose fusionada si está disponible, waypoint nominal como fallback
+        pose_src = 'nominal'
+        ox, oy, oz = WAYPOINTS[idx]
+        oyaw = 0.0
+        if self.current_pose is not None:
+            ox, oy, oz = self.current_pose
+            pose_src = 'odometria'
+
+        meta = {
+            'wp_index': idx,
+            'x':        float(ox),
+            'y':        float(oy),
+            'z':        float(oz),
+            'yaw_deg':  float(math.degrees(oyaw)),
+            'pose_src': pose_src,
+            'stamp':    datetime.now().strftime('%Y%m%d_%H%M%S'),
+            'img_w':    w,
+            'img_h':    h,
+        }
+
+        # Guardar JSON de metadatos
+        json_path = path.with_suffix('.json')
+        try:
+            with open(json_path, 'w') as f:
+                json.dump(meta, f, indent=2)
+            self.get_logger().info(
+                f'[WP{idx}] JSON guardado: {json_path.name} — '
+                f'pose=({ox:+.3f}, {oy:+.3f}, {oz:.3f}) '
+                f'yaw={math.degrees(oyaw):+.1f}° [{pose_src}]'
+            )
+        except Exception as exc:
+            self.get_logger().error(f'[WP{idx}] Error guardando JSON: {exc}')
 
     def _postprocess(self):
         stitch_out = self.out_dir / 'stitching'
