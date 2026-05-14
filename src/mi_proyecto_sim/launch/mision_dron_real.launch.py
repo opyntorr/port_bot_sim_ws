@@ -13,8 +13,6 @@ Uso:
   ros2 launch mi_proyecto_sim mision_dron_real.launch.py
   ros2 launch mi_proyecto_sim mision_dron_real.launch.py tello_ip:=192.168.10.1
 """
-import os
-
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnShutdown
@@ -83,7 +81,6 @@ def generate_launch_description():
         name='plotter',
         output='screen',
         parameters=[{'use_sim_time': False}],
-        additional_env={'DISPLAY': os.environ.get('DISPLAY', ':0')},
     )
 
     land_on_shutdown = RegisterEventHandler(

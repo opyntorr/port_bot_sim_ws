@@ -7,6 +7,7 @@ ArUcos del carrito (id 4) y meta (id 5) en la imagen stitcheada.
 Mapa generado: 3.9m x 3.9m con origen en el centro de la imagen.
 """
 
+import json
 import math
 import subprocess
 from datetime import datetime
@@ -17,7 +18,7 @@ import numpy as np
 import rclpy
 import yaml
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Point, TransformStamped
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -33,7 +34,7 @@ except ImportError:
 
 # Patron serpiente en grid 3x3 (todos a z=2.5m). Spacing 1.3m para ~60% overlap.
 # Cobertura: -1.3m a 1.3m en X e Y.
-_Z = 2.5
+_Z = 2.0
 _COLS = [-1.3, 0.0, 1.3]
 _ROWS = [1.3, 0.0, -1.3]
 WAYPOINTS = []
@@ -81,6 +82,7 @@ class MisionDron(Node):
         self.bridge = CvBridge()
         self.latest_image = None
         self.current_pose = None
+        self.optitrack_pose = None  # (x, y, z, yaw) del OptiTrack en el momento de la foto
 
         qos_be = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -89,6 +91,7 @@ class MisionDron(Node):
         )
         self.create_subscription(Image, cam_topic, self._image_cb, qos_be)
         self.create_subscription(Odometry, odom_topic, self._odom_cb, qos_be)
+        self.create_subscription(PoseStamped, '/optitrack/rigid_body', self._optitrack_cb, qos_be)
         self.target_pub = self.create_publisher(Point, '/drone1/target_position', 10)
         self.static_tf = StaticTransformBroadcaster(self)
 
@@ -123,6 +126,14 @@ class MisionDron(Node):
     def _odom_cb(self, msg):
         p = msg.pose.pose.position
         self.current_pose = (p.x, p.y, p.z)
+
+    def _optitrack_cb(self, msg: PoseStamped):
+        p = msg.pose.position
+        q = msg.pose.orientation
+        # Yaw desde cuaternión: atan2(2(wz+xy), 1-2(y²+z²))
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.optitrack_pose = (p.x, p.y, p.z, yaw)
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
@@ -238,8 +249,31 @@ class MisionDron(Node):
         img = self.bridge.imgmsg_to_cv2(self.latest_image, 'bgr8')
         path = self.fotos_dir / f'wp_{idx:02d}.png'
         cv2.imwrite(str(path), img)
-        x, y, z = WAYPOINTS[idx]
-        self.get_logger().info(f'Foto WP{idx} @ ({x:+.1f},{y:+.1f},{z}) -> {path.name}')
+
+        # Pose: OptiTrack si está disponible, waypoint nominal como fallback
+        if self.optitrack_pose is not None:
+            ox, oy, oz, oyaw = self.optitrack_pose
+            pose_src = 'optitrack'
+        else:
+            ox, oy, oz = WAYPOINTS[idx]
+            oyaw = 0.0
+            pose_src = 'nominal'
+
+        meta = {
+            'x':     float(ox),
+            'y':     float(oy),
+            'z':     float(oz),
+            'yaw':   float(oyaw),
+            'stamp': datetime.now().strftime('%Y%m%d_%H%M%S'),
+        }
+        json_path = path.with_suffix('.json')
+        with open(json_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+
+        self.get_logger().info(
+            f'Foto WP{idx} @ ({ox:+.2f},{oy:+.2f},{oz:.2f}) yaw={math.degrees(oyaw):+.1f}° '
+            f'[{pose_src}] -> {path.name}'
+        )
 
     def _postprocess(self):
         stitch_out = self.out_dir / 'stitching'
