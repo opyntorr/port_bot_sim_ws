@@ -33,12 +33,17 @@ try:
 except ImportError:
     _HAS_TELLO_ACTION = False
 
+def make_range_points(n, min_value=-1.3, max_value=1.3):
+    step = (max_value - min_value) / (n - 1)
+    return [min_value + i * step for i in range(n)]
+
 # Patron serpiente en grid 3x3 (todos a z=2.5m). Spacing 1.3m para ~60% overlap.
 # Cobertura: -1.3m a 1.3m en X e Y.
 _Z = 2
-_COLS = [-1.3, 0.0, 1.3]
-_ROWS = [1.3, 0.0, -1.3]
 WAYPOINTS = []
+GRID_SIZE = 4
+_COLS = make_range_points(GRID_SIZE)
+_ROWS = list(reversed(make_range_points(GRID_SIZE)))
 for i, y in enumerate(_ROWS):
     row = _COLS if i % 2 == 0 else list(reversed(_COLS))
     for x in row:
@@ -51,7 +56,6 @@ ARUCO_META_ID = 5
 POS_TOL = 0.25
 POS_TOL_EXIT = 0.50   # hysteresis: solo reinicia el temporizador si se aleja más de esto
 SETTLE_TIME = 1.5
-
 
 def _find_ws_root() -> Path:
     """Devuelve la raíz del workspace: /ros2_ws en Docker, o se deriva del share dir en el host."""
@@ -260,13 +264,7 @@ class MisionDron(Node):
 
         # Guardar PNG
         path = self.fotos_dir / f'wp_{idx:02d}.png'
-        ok = cv2.imwrite(str(path), img)
-        if ok:
-            size_kb = path.stat().st_size / 1024
-            self.get_logger().info(f'[WP{idx}] PNG guardado: {path.name} ({size_kb:.1f} KB)')
-        else:
-            self.get_logger().error(f'[WP{idx}] cv2.imwrite falló — foto NO guardada en {path}')
-            return
+        cv2.imwrite(str(path), img)
 
         # Pose: pose fusionada si está disponible, waypoint nominal como fallback
         pose_src = 'nominal'
