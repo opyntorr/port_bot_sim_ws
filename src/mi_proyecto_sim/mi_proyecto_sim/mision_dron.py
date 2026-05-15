@@ -33,7 +33,7 @@ try:
 except ImportError:
     _HAS_TELLO_ACTION = False
 
-def make_range_points(n, min_value=-1.3, max_value=1.3):
+def make_range_points(n, min_value=-1.1, max_value=1.1):
     step = (max_value - min_value) / (n - 1)
     return [min_value + i * step for i in range(n)]
 
@@ -41,7 +41,7 @@ def make_range_points(n, min_value=-1.3, max_value=1.3):
 # Cobertura: -1.3m a 1.3m en X e Y.
 _Z = 2.5
 WAYPOINTS = []
-GRID_SIZE = 4
+GRID_SIZE = 3
 _COLS = make_range_points(GRID_SIZE)
 _ROWS = list(reversed(make_range_points(GRID_SIZE)))
 for i, y in enumerate(_ROWS):
@@ -82,7 +82,7 @@ class MisionDron(Node):
         self.declare_parameter('stitcher', 'legacy')
         self.declare_parameter('stitch_resolution', 0.005)
         self.declare_parameter('camera_yaml', '')
-        self.declare_parameter('photo_interval', 1.0)
+        self.declare_parameter('photo_interval', 0.2)
         self.declare_parameter('photo_z_tol', 0.3)
 
         self.real = self.get_parameter('use_real_drone').get_parameter_value().bool_value
@@ -278,19 +278,18 @@ class MisionDron(Node):
         self.get_logger().info(f'[WP{idx}] Imagen capturada: {w}x{h} px')
 
         # Guardar PNG
-        path = self.fotos_dir / f'wp_{idx:02d}.png'
+        path = self.fotos_dir / f'foto_{idx:04d}.png'
         cv2.imwrite(str(path), img)
 
-        # Pose: pose fusionada si está disponible, waypoint nominal como fallback
+        # Pose actual del dron en el momento de la captura
         pose_src = 'nominal'
-        ox, oy, oz = WAYPOINTS[idx]
-        oyaw = 0.0
+        ox, oy, oz, oyaw = 0.0, 0.0, _Z, 0.0
         if self.current_pose is not None:
             ox, oy, oz, oyaw = self.current_pose
             pose_src = 'odometria'
 
         meta = {
-            'wp_index': idx,
+            'photo_index': idx,
             'x':        float(ox),
             'y':        float(oy),
             'z':        float(oz),
