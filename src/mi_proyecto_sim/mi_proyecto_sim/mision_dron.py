@@ -41,9 +41,9 @@ def make_range_points(n, min_value=-1.3, max_value=1.3):
 # Cobertura: -1.3m a 1.3m en X e Y.
 _Z = 2.5
 WAYPOINTS = []
-GRID_SIZE = 3
-_COLS = make_range_points(GRID_SIZE, -1.1, 1.1)
-_ROWS = list(reversed(make_range_points(GRID_SIZE, -1.1, 1.1)))
+GRID_SIZE = 4
+_COLS = make_range_points(GRID_SIZE)
+_ROWS = list(reversed(make_range_points(GRID_SIZE)))
 for i, y in enumerate(_ROWS):
     row = _COLS if i % 2 == 0 else list(reversed(_COLS))
     for x in row:
