@@ -82,11 +82,15 @@ class MisionDron(Node):
         self.declare_parameter('stitcher', 'legacy')
         self.declare_parameter('stitch_resolution', 0.005)
         self.declare_parameter('camera_yaml', '')
+        self.declare_parameter('photo_interval', 1.0)
+        self.declare_parameter('photo_z_tol', 0.3)
 
         self.real = self.get_parameter('use_real_drone').get_parameter_value().bool_value
         self.stitcher_mode = self.get_parameter('stitcher').get_parameter_value().string_value
         self.stitch_resolution = self.get_parameter('stitch_resolution').get_parameter_value().double_value
         self.camera_yaml = self.get_parameter('camera_yaml').get_parameter_value().string_value
+        self.photo_interval = self.get_parameter('photo_interval').get_parameter_value().double_value
+        self.photo_z_tol = self.get_parameter('photo_z_tol').get_parameter_value().double_value
 
         # Tópicos: parámetro explícito > default según modo
         cam_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
@@ -128,10 +132,12 @@ class MisionDron(Node):
 
         self.state = 'INIT'
         self.wp_index = 0
-        self.settle_start = None
         self.takeoff_t = None
         self.land_t = None
         self.land_called = False
+        self.photo_count = 0
+        self.last_photo_t = None
+        self.wp_inside_tol = False
 
         self.timer = self.create_timer(0.1, self._tick)
         modo = 'REAL' if self.real else 'SIM'
@@ -209,32 +215,30 @@ class MisionDron(Node):
             x, y, z = WAYPOINTS[self.wp_index]
             self._publish_target(x, y, z)
 
+            # Foto por intervalo de tiempo, solo si el dron está a altura objetivo
+            if self.current_pose is not None:
+                cz = self.current_pose[2]
+                at_altitude = abs(cz - _Z) < self.photo_z_tol
+                if at_altitude:
+                    if self.last_photo_t is None or (now - self.last_photo_t) >= self.photo_interval:
+                        self._save_photo(self.photo_count)
+                        self.photo_count += 1
+                        self.last_photo_t = now
+
+            # Avanzar al siguiente waypoint solo en el flanco de entrada a POS_TOL
             dist = self._distance_to(x, y, z)
-            if dist < POS_TOL:
-                if self.settle_start is None:
-                    self.settle_start = now
+            if dist < POS_TOL and not self.wp_inside_tol:
+                self.wp_inside_tol = True
+                self.wp_index += 1
+                if self.wp_index >= len(WAYPOINTS):
+                    self.get_logger().info('Todos los waypoints completados.')
+                    self.state = 'LAND'
+                else:
                     self.get_logger().info(
-                        f'WP{self.wp_index} dentro de tolerancia (d={dist:.3f}m). '
-                        f'Esperando {SETTLE_TIME}s de estabilidad...'
+                        f'Avanzando a WP{self.wp_index}: {WAYPOINTS[self.wp_index]}'
                     )
-                elif (now - self.settle_start) > SETTLE_TIME:
-                    self._save_photo(self.wp_index)
-                    self.settle_start = None
-                    self.wp_index += 1
-                    if self.wp_index >= len(WAYPOINTS):
-                        self.get_logger().info('Todos los waypoints completados.')
-                        self.state = 'LAND'
-                    else:
-                        self.get_logger().info(
-                            f'Avanzando a WP{self.wp_index}: '
-                            f'{WAYPOINTS[self.wp_index]}'
-                        )
             elif dist > POS_TOL_EXIT:
-                if self.settle_start is not None:
-                    self.get_logger().info(
-                        f'WP{self.wp_index} settle reiniciado (d={dist:.3f}m > {POS_TOL_EXIT}m)'
-                    )
-                self.settle_start = None
+                self.wp_inside_tol = False
             return
 
         if self.state == 'LAND':

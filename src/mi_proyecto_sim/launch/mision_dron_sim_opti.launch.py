@@ -14,12 +14,24 @@ Asume que Gazebo + el spawner del Tello ya estan corriendo
 Uso:
   ros2 launch mi_proyecto_sim mision_dron_sim_opti.launch.py
 """
+import os
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import TimerAction
+from launch.actions import TimerAction, ExecuteProcess, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    pkg_sim = get_package_share_directory('mi_proyecto_sim')
+    ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
+
+    stitch_script = os.path.join(
+        ws_root, 'src', 'mi_proyecto_sim', 'mi_proyecto_sim', 'stitching_pose.py'
+    )
+    mision_output = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'mision_output')
+    camera_yaml = '/ros2_ws/src/mi_proyecto_sim/config/camera_tello_sim.yaml'
+
     optitrack_sim = Node(
         package='tello_control_pos',
         executable='optitrack_simulator',
@@ -28,7 +40,7 @@ def generate_launch_description():
         parameters=[
             {'use_sim_time': True},
             {'latency_sec': 0.005},
-            {'publish_orientation': True},  # IMPORTANTE: clave de este launch
+            {'publish_orientation': True},
         ],
     )
 
@@ -66,26 +78,44 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
-    mision = TimerAction(
-        period=5.0,
-        actions=[Node(
-            package='mi_proyecto_sim',
-            executable='mision_dron.py',
-            name='mision_dron',
-            output='screen',
-            parameters=[
-                {'use_sim_time': True},
-                {'use_real_drone': False},
-                # En sim el bridge expone /uav/camera/image (no /drone1/camera_down)
-                {'camera_topic': '/uav/camera/image'},
-                # Usar la pose ya fusionada con orientacion optitrack
-                {'odom_topic': '/odometry/filtered'},
-                {'stitcher': 'pose'},
-                {'stitch_resolution': 0.005},
-                # YAML con los intrinsecos reales de la camara del simulador
-                {'camera_yaml': '/ros2_ws/src/mi_proyecto_sim/config/camera_tello_sim.yaml'},
-            ],
-        )],
+    mision_node = Node(
+        package='mi_proyecto_sim',
+        executable='mision_dron.py',
+        name='mision_dron',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True},
+            {'use_real_drone': False},
+            {'camera_topic': '/uav/camera/image'},
+            {'odom_topic': '/odometry/filtered'},
+            {'stitcher': 'pose'},
+            {'stitch_resolution': 0.005},
+            {'camera_yaml': camera_yaml},
+            {'photo_interval': 0.2},
+            {'photo_z_tol': 0.3},
+        ],
+    )
+
+    mision = TimerAction(period=5.0, actions=[mision_node])
+
+    stitching_handler = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=mision_node,
+            on_exit=[ExecuteProcess(
+                cmd=[
+                    'bash', '-c',
+                    f'FOTOS=$(ls -td {mision_output}/*/fotos 2>/dev/null | head -1) && '
+                    f'[ -n "$FOTOS" ] && '
+                    f'python3 {stitch_script} '
+                    f'--input "$FOTOS" '
+                    f'--output "${{FOTOS%/fotos}}/stitching" '
+                    f'--camera {camera_yaml} '
+                    f'--resolution 0.005 || '
+                    f'echo "[stitching] No se encontro directorio de fotos"'
+                ],
+                output='screen',
+            )],
+        )
     )
 
     return LaunchDescription([
@@ -94,4 +124,5 @@ def generate_launch_description():
         pid_controller,
         plotter,
         mision,
+        stitching_handler,
     ])
