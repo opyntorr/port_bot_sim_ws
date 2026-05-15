@@ -67,7 +67,8 @@ def _find_ws_root() -> Path:
 
 
 WS_ROOT = _find_ws_root()
-STITCH_SCRIPT = WS_ROOT / 'src' / 'demo_tello_sim' / 'camera_calibration' / 'stitch_images.py'
+STITCH_SCRIPT      = WS_ROOT / 'src' / 'demo_tello_sim' / 'camera_calibration' / 'stitch_images.py'
+STITCH_POSE_SCRIPT = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'mi_proyecto_sim' / 'stitching_pose.py'
 MAPS_DIR = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'maps'
 
 
@@ -78,8 +79,14 @@ class MisionDron(Node):
         self.declare_parameter('use_real_drone', False)
         self.declare_parameter('camera_topic', '')
         self.declare_parameter('odom_topic', '')
+        self.declare_parameter('stitcher', 'legacy')
+        self.declare_parameter('stitch_resolution', 0.005)
+        self.declare_parameter('camera_yaml', '')
 
         self.real = self.get_parameter('use_real_drone').get_parameter_value().bool_value
+        self.stitcher_mode = self.get_parameter('stitcher').get_parameter_value().string_value
+        self.stitch_resolution = self.get_parameter('stitch_resolution').get_parameter_value().double_value
+        self.camera_yaml = self.get_parameter('camera_yaml').get_parameter_value().string_value
 
         # Tópicos: parámetro explícito > default según modo
         cam_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
@@ -138,7 +145,11 @@ class MisionDron(Node):
 
     def _odom_cb(self, msg):
         p = msg.pose.pose.position
-        self.current_pose = (p.x, p.y, p.z)
+        q = msg.pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        self.current_pose = (p.x, p.y, p.z, yaw)
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
@@ -169,7 +180,7 @@ class MisionDron(Node):
     def _distance_to(self, x, y, z):
         if self.current_pose is None:
             return float('inf')
-        cx, cy, cz = self.current_pose
+        cx, cy, cz = self.current_pose[:3]
         return math.sqrt((x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2)
 
     def _tick(self):
@@ -271,7 +282,7 @@ class MisionDron(Node):
         ox, oy, oz = WAYPOINTS[idx]
         oyaw = 0.0
         if self.current_pose is not None:
-            ox, oy, oz = self.current_pose
+            ox, oy, oz, oyaw = self.current_pose
             pose_src = 'odometria'
 
         meta = {
@@ -279,6 +290,7 @@ class MisionDron(Node):
             'x':        float(ox),
             'y':        float(oy),
             'z':        float(oz),
+            'yaw':      float(oyaw),
             'yaw_deg':  float(math.degrees(oyaw)),
             'pose_src': pose_src,
             'stamp':    datetime.now().strftime('%Y%m%d_%H%M%S'),
@@ -302,13 +314,24 @@ class MisionDron(Node):
     def _postprocess(self):
         stitch_out = self.out_dir / 'stitching'
         stitch_out.mkdir(exist_ok=True)
-        cmd = [
-            'python3', str(STITCH_SCRIPT),
-            '--input', str(self.fotos_dir),
-            '--output', str(stitch_out),
-            '--no-undistort',
-        ]
-        self.get_logger().info(f'Stitching: {" ".join(cmd)}')
+
+        if self.stitcher_mode == 'pose' and self.camera_yaml:
+            cmd = [
+                'python3', str(STITCH_POSE_SCRIPT),
+                '--input',      str(self.fotos_dir),
+                '--output',     str(stitch_out),
+                '--camera',     self.camera_yaml,
+                '--resolution', str(self.stitch_resolution),
+            ]
+        else:
+            cmd = [
+                'python3', str(STITCH_SCRIPT),
+                '--input', str(self.fotos_dir),
+                '--output', str(stitch_out),
+                '--no-undistort',
+            ]
+
+        self.get_logger().info(f'Stitching ({self.stitcher_mode}): {" ".join(cmd)}')
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             self.get_logger().error(f'Stitching fallo:\n{result.stderr}')

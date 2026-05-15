@@ -1,0 +1,35 @@
+# Intrinsecos de la camara virtual del tello_con_espejo en Ignition Gazebo.
+# Calculados de: horizontal_fov=1.4416 rad, image 1280x720, pixeles cuadrados.
+# Distorsion cero (camara simulada perfecta).
+#
+# camera_rotation_deg: offset constante que se suma al yaw para compensar la
+# orientacion del sensor. El sensor tiene pitch=+90deg (mirando hacia abajo),
+# lo que hace que imagen-derecha = mundo+Y e imagen-abajo = mundo+X.
+# Para alinear con el canvas (derecha=+X, abajo=-Y) se necesita rotar -90deg.
+camera_rotation_deg: -90.0
+image_width: 1280
+image_height: 720
+camera_name: tello_espejo_sim
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [728.528, 0.000000, 640.0,
+         0.000000, 728.528, 360.0,
+         0.000000, 0.000000, 1.000000]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [728.528, 0.0, 640.0, 0.0,
+         0.0, 728.528, 360.0, 0.0,
+         0.0, 0.0, 1.0, 0.0]

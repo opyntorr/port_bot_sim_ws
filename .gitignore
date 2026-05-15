@@ -3,3 +3,6 @@ install/
 log/
 .vscode/
 .agents/rules
+src/mi_proyecto_sim/mision_output/
+**/__pycache__/
+*.pyc

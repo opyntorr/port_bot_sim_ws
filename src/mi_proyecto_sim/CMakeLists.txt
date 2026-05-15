@@ -42,7 +42,7 @@ install(PROGRAMS
   mi_proyecto_sim/slam_occupancy_grid.py
   mi_proyecto_sim/guardar_mapa_slam.py
   mi_proyecto_sim/mision_dron.py
-  # mi_proyecto_sim/stitching_pose.py
+  mi_proyecto_sim/stitching_pose.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

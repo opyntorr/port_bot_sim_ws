@@ -1,0 +1,122 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="laberinto_real">
+    <static>true</static>
+
+    <pose>0 0 0 0 0 1.5708</pose>
+
+    <link name="link">
+
+      <visual name="visual_piso">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/piso.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.05 0.05 0.05 1</ambient>
+          <diffuse>0.05 0.05 0.05 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="colision_piso">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/piso.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+      </collision>
+
+      <visual name="visual_paredes">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/paredes.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.6 0.4 0.2 1</ambient>
+          <diffuse>0.6 0.4 0.2 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="colision_paredes">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/paredes.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+      </collision>
+
+      <visual name="visual_cubos">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/cubos.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.6 0.4 0.2 1</ambient>
+          <diffuse>0.6 0.4 0.2 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="colision_cubos">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/cubos.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+      </collision>
+
+      <visual name="visual_laminas_azules">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/laminasAzules.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.0 0.3 0.8 1</ambient>
+          <diffuse>0.0 0.3 0.8 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="colision_laminas_azules">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/laminasAzules.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+      </collision>
+
+      <visual name="visual_laminas_blancas">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/laminasBlancas.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.9 0.9 0.9 1</ambient>
+          <diffuse>0.9 0.9 0.9 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="colision_laminas_blancas">
+        <geometry>
+          <mesh>
+            <uri>model://laberinto_real/meshes/laminasBlancas.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+      </collision>
+
+    </link>
+  </model>
+</sdf>
