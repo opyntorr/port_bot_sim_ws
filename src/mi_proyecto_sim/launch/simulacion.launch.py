@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnProcessExit
 from launch_ros.actions import Node
 from launch.substitutions import Command
@@ -97,37 +97,39 @@ def generate_launch_description():
         }]
     )
 
-    # 6. Gazebo Spawner
-    spawner = Node(
-        package='ros_gz_sim',
-        executable='create',
-        arguments=[
-            '-name', 'rosmaster_x3',
-            '-topic', 'robot_description',
-            
-            # --- POSICIÓN ---
-            '-x', '-1.0',  # Coordenada X en metros
-            '-y', '1.0',  # Coordenada Y en metros
-            '-z', '0.1',  # Altura inicial
-            
-            # --- ORIENTACIÓN (Añadir esto) ---
-            '-Y', '-1.5708' # Orientación (Yaw) en radianes. 
-        ],
-        output='screen'
+    # 6. Gazebo Spawner — retrasado para que robot_state_publisher publique robot_description
+    spawner = TimerAction(
+        period=3.0,
+        actions=[Node(
+            package='ros_gz_sim',
+            executable='create',
+            arguments=[
+                '-name', 'rosmaster_x3',
+                '-topic', 'robot_description',
+                '-x', '-1.0',
+                '-y', '1.0',
+                '-z', '0.1',
+                '-Y', '-1.5708',
+            ],
+            output='screen'
+        )]
     )
 
-    # 6b. Gazebo Spawner Dron
-    spawner_dron = Node(
-        package='ros_gz_sim',
-        executable='create',
-        arguments=[
-            '-name', 'drone1',
-            '-file', tello_espejo_sdf,
-            '-x', '0.0',
-            '-y', '0.0',
-            '-z', '1.0'
-        ],
-        output='screen'
+    # 6b. Gazebo Spawner Dron — retrasado para que el mundo esté listo
+    spawner_dron = TimerAction(
+        period=4.0,
+        actions=[Node(
+            package='ros_gz_sim',
+            executable='create',
+            arguments=[
+                '-name', 'drone1',
+                '-file', tello_espejo_sdf,
+                '-x', '0.0',
+                '-y', '0.0',
+                '-z', '1.0'
+            ],
+            output='screen'
+        )]
     )
 
     # Visor RViz con configuración guardada

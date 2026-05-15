@@ -42,7 +42,7 @@
         <pose>0.1 0 -0.05 0 1.570796 0</pose>
         <always_on>1</always_on>
         <update_rate>30</update_rate>
-        <visualize>true</visualize>
+        <visualize>false</visualize>
         <!-- Publica en el topico original que espera el detector ArUco -->
         <topic>/uav/camera/image</topic>
         <camera>

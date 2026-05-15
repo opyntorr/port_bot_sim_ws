@@ -58,10 +58,11 @@
       </link>
     </model>
 
-    <include>
+    <!-- dronCamara desactivado: colisionaba con uav/camera/image del tello_con_espejo -->
+    <!-- <include>
       <uri>file://dronCamara.sdf</uri>
       <pose>0 0 5.5 0 0 0</pose>
-    </include>
+    </include> -->
 
     <include>
       <name>aruco_0</name>
