@@ -19,7 +19,7 @@ import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Point, TransformStamped
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -68,6 +68,7 @@ def _find_ws_root() -> Path:
 
 WS_ROOT = _find_ws_root()
 STITCH_SCRIPT = WS_ROOT / 'src' / 'demo_tello_sim' / 'camera_calibration' / 'stitch_images.py'
+STITCH_POSICION_SCRIPT = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'mi_proyecto_sim' / 'stitch_posicion.py'
 MAPS_DIR = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'maps'
 
 
@@ -78,6 +79,7 @@ class MisionDron(Node):
         self.declare_parameter('use_real_drone', False)
         self.declare_parameter('camera_topic', '')
         self.declare_parameter('odom_topic', '')
+        self.declare_parameter('optitrack_topic', '/optitrack/rigid_body')
 
         self.real = self.get_parameter('use_real_drone').get_parameter_value().bool_value
 
@@ -97,14 +99,18 @@ class MisionDron(Node):
         self.bridge = CvBridge()
         self.latest_image = None
         self.current_pose = None
+        self.optitrack_yaw = None
 
         qos_be = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
         )
+        optitrack_topic = self.get_parameter('optitrack_topic').get_parameter_value().string_value
         self.create_subscription(Image, cam_topic, self._image_cb, qos_be)
         self.create_subscription(Odometry, odom_topic, self._odom_cb, qos_be)
+        if self.real:
+            self.create_subscription(PoseStamped, optitrack_topic, self._optitrack_cb, qos_be)
         self.target_pub = self.create_publisher(Point, '/drone1/target_position', 10)
         self.static_tf = StaticTransformBroadcaster(self)
 
@@ -136,9 +142,18 @@ class MisionDron(Node):
     def _image_cb(self, msg):
         self.latest_image = msg
 
+    def _optitrack_cb(self, msg):
+        q = msg.pose.orientation
+        self.optitrack_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                        1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+
     def _odom_cb(self, msg):
         p = msg.pose.pose.position
-        self.current_pose = (p.x, p.y, p.z)
+        q = msg.pose.pose.orientation
+        # yaw from quaternion: atan2(2*(qw*qz + qx*qy), 1 - 2*(qy² + qz²))
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.current_pose = (p.x, p.y, p.z, yaw)
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
@@ -169,7 +184,7 @@ class MisionDron(Node):
     def _distance_to(self, x, y, z):
         if self.current_pose is None:
             return float('inf')
-        cx, cy, cz = self.current_pose
+        cx, cy, cz = self.current_pose[:3]
         return math.sqrt((x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2)
 
     def _tick(self):
@@ -271,8 +286,11 @@ class MisionDron(Node):
         ox, oy, oz = WAYPOINTS[idx]
         oyaw = 0.0
         if self.current_pose is not None:
-            ox, oy, oz = self.current_pose
+            ox, oy, oz, oyaw = self.current_pose
             pose_src = 'odometria'
+        if self.optitrack_yaw is not None:
+            oyaw = self.optitrack_yaw
+            pose_src = pose_src + '+optitrack_yaw' if pose_src != 'nominal' else 'optitrack_yaw'
 
         meta = {
             'wp_index': idx,
@@ -303,10 +321,11 @@ class MisionDron(Node):
         stitch_out = self.out_dir / 'stitching'
         stitch_out.mkdir(exist_ok=True)
         cmd = [
-            'python3', str(STITCH_SCRIPT),
+            'python3', str(STITCH_POSICION_SCRIPT),
             '--input', str(self.fotos_dir),
             '--output', str(stitch_out),
             '--no-undistort',
+            '--max-dist', '1.6',
         ]
         self.get_logger().info(f'Stitching: {" ".join(cmd)}')
         result = subprocess.run(cmd, capture_output=True, text=True)
