@@ -18,7 +18,6 @@ import numpy as np
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
-from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -33,13 +32,13 @@ try:
 except ImportError:
     _HAS_TELLO_ACTION = False
 
-def make_range_points(n, min_value=-1.3, max_value=1.3):
+def make_range_points(n, min_value=-1.1, max_value=1.1):
     step = (max_value - min_value) / (n - 1)
     return [min_value + i * step for i in range(n)]
 
 # Patron serpiente en grid 3x3 (todos a z=2.5m). Spacing 1.3m para ~60% overlap.
 # Cobertura: -1.3m a 1.3m en X e Y.
-_Z = 2
+_Z = 2.5
 WAYPOINTS = []
 GRID_SIZE = 4
 _COLS = make_range_points(GRID_SIZE)
@@ -96,7 +95,6 @@ class MisionDron(Node):
         self.fotos_dir = self.out_dir / 'fotos'
         self.fotos_dir.mkdir(parents=True, exist_ok=True)
 
-        self.bridge = CvBridge()
         self.latest_image = None
         self.current_pose = None
         self.optitrack_yaw = None
@@ -143,6 +141,8 @@ class MisionDron(Node):
         self.latest_image = msg
 
     def _optitrack_cb(self, msg):
+        if msg.header.frame_id != 'drone':
+            return
         q = msg.pose.orientation
         self.optitrack_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
@@ -267,9 +267,14 @@ class MisionDron(Node):
             self.get_logger().warn(f'[WP{idx}] Sin imagen disponible — foto no guardada')
             return
 
-        # Decodificar imagen
+        # Decodificar imagen (evita cv_bridge para compatibilidad con NumPy 2.x)
         try:
-            img = self.bridge.imgmsg_to_cv2(self.latest_image, 'bgr8')
+            m = self.latest_image
+            img = np.frombuffer(m.data, dtype=np.uint8).reshape(m.height, m.width, -1)
+            if m.encoding in ('rgb8', 'RGB8'):
+                img = img[:, :, ::-1].copy()
+            elif m.encoding in ('mono8', 'MONO8'):
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         except Exception as exc:
             self.get_logger().error(f'[WP{idx}] Error decodificando imagen: {exc}')
             return
@@ -326,6 +331,7 @@ class MisionDron(Node):
             '--output', str(stitch_out),
             '--no-undistort',
             '--max-dist', '1.6',
+            '--positional-only',   # tile grid is repetitive; SIFT causes ghost matches
         ]
         self.get_logger().info(f'Stitching: {" ".join(cmd)}')
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -343,8 +349,24 @@ class MisionDron(Node):
 
         cart_meta = self._detect_aruco_positions(stitched)
 
-        gray = cv2.cvtColor(stitched, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Color-based binarization: dark floor tiles + orange grid lines = free;
+        # everything else within coverage = obstacle (walls, boxes, etc.)
+        coverage_img = cv2.imread(str(stitch_out / 'coverage.png'), cv2.IMREAD_GRAYSCALE)
+        covered = (coverage_img > 127) if coverage_img is not None else \
+                  (cv2.cvtColor(stitched, cv2.COLOR_BGR2GRAY) > 5)
+
+        hsv = cv2.cvtColor(stitched, cv2.COLOR_BGR2HSV)
+        floor_dark   = cv2.inRange(hsv, (0,   0,  0), (180, 80, 70))   # near-black tiles
+        floor_orange = cv2.inRange(hsv, (10, 100, 80), (30, 255, 220))  # orange separators
+        floor = cv2.bitwise_or(floor_dark, floor_orange)
+        k3 = np.ones((3, 3), np.uint8)
+        floor = cv2.morphologyEx(floor, cv2.MORPH_CLOSE, k3, iterations=2)
+
+        # ROS2 trinary occupancy: 254=free, 0=occupied, 205=unknown
+        occ = np.full(stitched.shape[:2], 205, dtype=np.uint8)
+        occ[covered & (floor > 0)] = 254
+        occ[covered & (floor == 0)] = 0
+        binary = occ
 
         MAPS_DIR.mkdir(parents=True, exist_ok=True)
         pgm_path = MAPS_DIR / 'mapa_mision.pgm'
@@ -352,16 +374,26 @@ class MisionDron(Node):
         cv2.imwrite(str(pgm_path), binary)
 
         h, w = binary.shape
-        resolution = MAP_SIZE_M / max(w, h)
+        scale_path = stitch_out / 'scale.json'
+        if scale_path.exists():
+            sd = json.loads(scale_path.read_text())
+            resolution = 1.0 / sd['pixels_per_meter']
+            origin_x   = sd['origin_x_m']
+            origin_y   = sd['origin_y_m']
+        else:
+            resolution = MAP_SIZE_M / max(w, h)
+            origin_x   = -MAP_SIZE_M / 2.0
+            origin_y   = -MAP_SIZE_M / 2.0
+
         with open(yaml_path, 'w') as f:
             yaml.dump({
-                'image': pgm_path.name,
-                'mode': 'trinary',
-                'resolution': float(resolution),
-                'origin': [-MAP_SIZE_M / 2.0, -MAP_SIZE_M / 2.0, 0.0],
-                'negate': 0,
+                'image':           pgm_path.name,
+                'mode':            'trinary',
+                'resolution':      float(resolution),
+                'origin':          [float(origin_x), float(origin_y), 0.0],
+                'negate':          0,
                 'occupied_thresh': 0.65,
-                'free_thresh': 0.196,
+                'free_thresh':     0.196,
             }, f)
         self.get_logger().info(f'Mapa: {pgm_path} ({w}x{h}, res={resolution:.4f} m/px)')
 
