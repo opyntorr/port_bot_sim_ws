@@ -202,16 +202,9 @@ class ArucoSlamTf(Node):
                 self.get_logger().info("Snapshot completado. Se seguira publicando video, pero sin recalcular TFs.")
 
             elif not self.snapshot_tomado:
-                # Log de diagnóstico: Qué falta para el snapshot
-                missing = [m for m in [0, 1, 2, 3, 4, 5] if m not in ids_detectados]
-                if (now - self.last_log_time).nanoseconds / 1e9 > 2.0:
-                    self.get_logger().info(f"Snapshot pendiente. Faltan marcadores: {missing}. Vistos: {ids_detectados}")
-                    self.last_log_time = now
+                pass
         else:
-            # Log de diagnóstico: No se ve nada
-            if not self.snapshot_tomado and (now - self.last_log_time).nanoseconds / 1e9 > 2.0:
-                self.get_logger().info("Buscando marcadores... No se detecta ninguno en el frame.")
-                self.last_log_time = now
+            pass
 
         self.publisher.publish(self.bridge.cv2_to_imgmsg(cv_image, "bgr8"))
 
