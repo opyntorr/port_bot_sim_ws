@@ -50,7 +50,7 @@ for i, y in enumerate(_ROWS):
 
 MAP_SIZE_M = 3.9
 ARUCO_CARRITO_ID = 4
-ARUCO_META_ID = 5
+ARUCO_META_ID = 0
 
 POS_TOL = 0.25
 POS_TOL_EXIT = 0.50   # hysteresis: solo reinicia el temporizador si se aleja más de esto
@@ -80,9 +80,11 @@ class MisionDron(Node):
         self.declare_parameter('odom_topic', '')
         self.declare_parameter('optitrack_topic', '/optitrack/rigid_body')
         self.declare_parameter('invert_colors', False)
+        self.declare_parameter('map_size_m', 3.9)
 
         self.real = self.get_parameter('use_real_drone').get_parameter_value().bool_value
         self.invert_colors = self.get_parameter('invert_colors').get_parameter_value().bool_value
+        self.map_size_m = self.get_parameter('map_size_m').get_parameter_value().double_value
 
         # Tópicos: parámetro explícito > default según modo
         cam_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
@@ -234,6 +236,8 @@ class MisionDron(Node):
                     if self.wp_index >= len(WAYPOINTS):
                         self.get_logger().info('Todos los waypoints completados.')
                         self.state = 'LAND'
+                        self.land_called = False
+                        self.land_t = now
                     else:
                         self.get_logger().info(
                             f'Avanzando a WP{self.wp_index}: '
@@ -257,16 +261,20 @@ class MisionDron(Node):
             if self.current_pose[2] < 0.2 and (now - self.land_t) > 4.0:
                 self.get_logger().info('Aterrizado. Post-procesando...')
                 self.state = 'POSTPROCESS'
+            elif (now - self.land_t) > 8.0:
+                self.get_logger().info('Timeout aterrizaje. Post-procesando...')
+                self.state = 'POSTPROCESS'
             return
 
         if self.state == 'POSTPROCESS':
             self.timer.cancel()
             try:
                 self._postprocess()
-                self.get_logger().info('Mision completada.')
+                self.get_logger().info('Mision completada. Cerrando nodo...')
             except Exception as exc:
                 self.get_logger().error(f'Post-proceso fallo: {exc}')
             self.state = 'DONE'
+            raise SystemExit
 
     def _save_photo(self, idx):
         if self.latest_image is None:
@@ -371,24 +379,26 @@ class MisionDron(Node):
 
         cart_meta = self._detect_aruco_positions_from_photos()
 
-        # Color-based binarization: dark floor tiles + orange grid lines = free;
-        # everything else within coverage = obstacle (walls, boxes, etc.)
-        coverage_img = cv2.imread(str(stitch_out / 'coverage.png'), cv2.IMREAD_GRAYSCALE)
-        covered = (coverage_img > 127) if coverage_img is not None else \
-                  (cv2.cvtColor(stitched, cv2.COLOR_BGR2GRAY) > 5)
+        # Usar directamente el mapa binarizado que genero stitch_pose.py
+        # (su deteccion de obstaculos por color es mas precisa)
+        stitch_pgm = stitch_out / 'occupancy_map.pgm'
+        stitch_yaml_path = stitch_out / 'occupancy_map.yaml'
 
-        hsv = cv2.cvtColor(stitched, cv2.COLOR_BGR2HSV)
-        floor_dark   = cv2.inRange(hsv, (0,   0,  0), (180, 80, 70))   # near-black tiles
-        floor_orange = cv2.inRange(hsv, (10, 100, 80), (30, 255, 220))  # orange separators
-        floor = cv2.bitwise_or(floor_dark, floor_orange)
-        k3 = np.ones((3, 3), np.uint8)
-        floor = cv2.morphologyEx(floor, cv2.MORPH_CLOSE, k3, iterations=2)
-
-        # ROS2 trinary occupancy: 254=free, 0=occupied, 205=unknown
-        occ = np.full(stitched.shape[:2], 205, dtype=np.uint8)
-        occ[covered & (floor > 0)] = 254
-        occ[covered & (floor == 0)] = 0
-        binary = occ
+        if stitch_pgm.exists():
+            binary = cv2.imread(str(stitch_pgm), cv2.IMREAD_GRAYSCALE)
+            # El PGM del stitcher esta en formato ROS (row0=min_y, ya volteado).
+            # slam_occupancy_grid lo voltea de nuevo al cargarlo, asi que
+            # lo revertimos aqui para que el doble-flip resulte correcto.
+            binary = cv2.flip(binary, 0)
+            self.get_logger().info(f'Usando mapa del stitcher: {stitch_pgm}')
+        else:
+            # Fallback: binarizacion simple si el stitcher no genero PGM
+            self.get_logger().warn('No se encontro PGM del stitcher. Binarizando el mosaico...')
+            gray = cv2.cvtColor(stitched, cv2.COLOR_BGR2GRAY)
+            covered = gray > 5
+            binary = np.full(gray.shape, 205, dtype=np.uint8)
+            binary[covered & (gray > 127)] = 254
+            binary[covered & (gray <= 127)] = 0
 
         MAPS_DIR.mkdir(parents=True, exist_ok=True)
         pgm_path = MAPS_DIR / 'mapa_mision.pgm'
@@ -396,16 +406,15 @@ class MisionDron(Node):
         cv2.imwrite(str(pgm_path), binary)
 
         h, w = binary.shape
-        stitch_yaml = stitch_out / 'occupancy_map.yaml'
-        if stitch_yaml.exists():
-            sd = yaml.safe_load(stitch_yaml.read_text())
+        if stitch_yaml_path.exists():
+            sd = yaml.safe_load(stitch_yaml_path.read_text())
             resolution = float(sd['resolution'])
             origin_x   = float(sd['origin'][0])
             origin_y   = float(sd['origin'][1])
         else:
-            resolution = MAP_SIZE_M / max(w, h)
-            origin_x   = -MAP_SIZE_M / 2.0
-            origin_y   = -MAP_SIZE_M / 2.0
+            resolution = self.map_size_m / max(w, h)
+            origin_x   = -self.map_size_m / 2.0
+            origin_y   = -self.map_size_m / 2.0
 
         with open(yaml_path, 'w') as f:
             yaml.dump({
@@ -419,8 +428,21 @@ class MisionDron(Node):
             }, f)
         self.get_logger().info(f'Mapa: {pgm_path} ({w}x{h}, res={resolution:.4f} m/px)')
 
+        # Copiar todos los artefactos del stitching a la carpeta de mapas
+        import shutil
+        for artifact in stitch_out.glob('*'):
+            dest = MAPS_DIR / artifact.name
+            if artifact.is_file():
+                shutil.copy2(str(artifact), str(dest))
+        self.get_logger().info(f'Artefactos del stitching copiados a {MAPS_DIR}')
+
         if cart_meta:
-            self._publish_aruco_tfs(cart_meta)
+            # Guardar arucos.yaml junto al mapa para que el nodo publicador_tfs lo lea
+            arucos_yaml_path = MAPS_DIR / 'arucos.yaml'
+            with open(arucos_yaml_path, 'w') as f:
+                yaml.dump(cart_meta, f)
+            self.get_logger().info(f'ArUcos guardados en {arucos_yaml_path}')
+            # Tambien guardar copia en el directorio de salida de la mision
             with open(self.out_dir / 'arucos.yaml', 'w') as f:
                 yaml.dump(cart_meta, f)
                 
@@ -439,9 +461,10 @@ class MisionDron(Node):
                     cv2.putText(grid_img, f"{name} (id:{data['id']})", (px_x + 20, px_y + 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
                 
-                # Guardar la imagen con las marcas en un archivo separado
+                # Guardar en stitching y en maps
                 arucos_vis_path = stitch_out / 'occupancy_map_grid_arucos.png'
                 cv2.imwrite(str(arucos_vis_path), grid_img)
+                shutil.copy2(str(arucos_vis_path), str(MAPS_DIR / arucos_vis_path.name))
                 self.get_logger().info(f"ArUcos dibujados en {arucos_vis_path.name}")
 
     def _detect_aruco_positions_from_photos(self):
@@ -567,12 +590,14 @@ def main(args=None):
     node = MisionDron()
     try:
         rclpy.spin(node)
+    except SystemExit:
+        pass  # Normal exit after mission complete
     except KeyboardInterrupt:
-        # Recuperación ante Ctrl+C
+        # Recuperacion ante Ctrl+C
         if getattr(node, 'state', None) != State.DONE:
             fotos = list(node.fotos_dir.glob('wp_*.png')) if getattr(node, 'fotos_dir', None) else []
             if len(fotos) > 0:
-                node.get_logger().warn(f'¡Interrupción (Ctrl+C) detectada! Tienes {len(fotos)} fotos guardadas.')
+                node.get_logger().warn(f'Interrupcion (Ctrl+C) detectada! Tienes {len(fotos)} fotos guardadas.')
                 node.get_logger().warn('Generando el mapa final de emergencia. POR FAVOR NO PRESIONES CTRL+C OTRA VEZ...')
                 try:
                     node._postprocess()

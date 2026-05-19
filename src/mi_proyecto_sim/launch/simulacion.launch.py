@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnProcessExit
 from launch_ros.actions import Node
 from launch.substitutions import Command
@@ -12,7 +12,7 @@ def generate_launch_description():
     pkg_sim = get_package_share_directory('mi_proyecto_sim')
     # Derivar la raíz del workspace: install/mi_proyecto_sim/share/mi_proyecto_sim -> 4 niveles arriba
     ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
-    mapa_pgm = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.pgm')
+    mapa_pgm = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_mision.pgm')
     # mapa_yaml = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.yaml')
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
@@ -231,7 +231,9 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    # 9. SLAM Occupancy Grid (Fusión Dron + LiDAR con replanificación)
+    # 9. SLAM Occupancy Grid (Fusion Dron + LiDAR con replanificacion)
+    # pgm_resolution y pgm_origin se leen del YAML automaticamente;
+    # los valores aqui son fallback si el YAML no existe.
     slam_occupancy_grid_node = Node(
         package='mi_proyecto_sim',
         executable='slam_occupancy_grid.py',
@@ -240,14 +242,15 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': True,
             'pgm_path': mapa_pgm,
-            'pgm_resolution': 0.01,
-            'pgm_origin_x': 0.0,
-            'pgm_origin_y': -4.4,
+            'pgm_resolution': 0.002,
+            'pgm_origin_x': -3.35,
+            'pgm_origin_y': -3.84,
             'map_resolution': 0.05,
-            'map_width': 120,
-            'map_height': 120,
-            'map_origin_x': -1.0,
-            'map_origin_y': -5.0,
+            'map_width': 160,
+            'map_height': 180,
+            'map_origin_x': -4.0,
+            'map_origin_y': -4.5,
+            'map_to_odom_yaw': 0.0,
         }]
     )
 
@@ -277,19 +280,77 @@ def generate_launch_description():
     #     parameters=[{'use_sim_time': True}]
     # )
 
-    # Generador de Mapa
-    generador_mapa_node = Node(
-        package='mi_proyecto_sim',
-        executable='generador_mapa.py',
-        name='generador_mapa',
+    # Nodos para la Mision del Dron
+    optitrack_sim = Node(
+        package='tello_control_pos',
+        executable='optitrack_simulator',
+        name='optitrack_simulator',
         output='screen',
-        parameters=[{
-            'ancho_laberinto_m': 2.50, # Ancho entre ArUcos (metros)
-            'alto_laberinto_m': 3.10,  # Alto entre ArUcos (metros)
-        }]
+        parameters=[
+            {'use_sim_time': True},
+            {'latency_sec': 0.005},
+            {'publish_orientation': True},
+        ],
     )
 
-    # Nodo de Planificación RRT
+    pose_fuser = Node(
+        package='tello_control_pos',
+        executable='pose_fuser_optitrack',
+        name='pose_fuser_optitrack',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    pid_controller = Node(
+        package='tello_control_pos',
+        executable='position_controller',
+        name='position_controller',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True},
+            {'velocity_scale': 1.0},
+            {'kp': 0.4},
+            {'ki': 0.02},
+            {'kd': 0.4},
+            {'enable_yaw_control': True},
+            {'kp_yaw': 1.5},
+            {'kd_yaw': 0.15},
+            {'max_yaw_rate': 0.8},
+        ],
+    )
+
+    plotter = Node(
+        package='tello_control_pos',
+        executable='plotter',
+        name='plotter',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    mision_dron_node = Node(
+        package='mi_proyecto_sim',
+        executable='mision_dron.py',
+        name='mision_dron',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True},
+            {'use_real_drone': False},
+            {'camera_topic': '/uav/camera/image'},
+            {'odom_topic': '/odometry/filtered'},
+            {'stitcher': 'pose'},
+            {'stitch_resolution': 0.005},
+            {'camera_yaml': '/ros2_ws/src/mi_proyecto_sim/config/camera_tello_sim.yaml'},
+            {'invert_colors': True},
+            {'map_size_m': 3.9},
+        ],
+    )
+    
+    mision = TimerAction(
+        period=5.0,
+        actions=[mision_dron_node],
+    )
+
+    # Nodo de Planificacion RRT
     planificador_rrt_node = Node(
         package='mi_proyecto_sim',
         executable='planificador_rrt',
@@ -300,21 +361,29 @@ def generate_launch_description():
             'robot_radius_m': 0.19,
         }]
     )
-    
-    # ... y recuerda añadir 'planificador_node' al final en el LaunchDescription
 
-    # Event handler para retrasar RRT y SLAM hasta que el mapa se genere
+    # Nodo que publica TFs estaticas de ArUcos (lee arucos.yaml generado por mision_dron)
+    publicador_tfs_node = Node(
+        package='mi_proyecto_sim',
+        executable='publicador_tfs_arucos.py',
+        name='publicador_tfs_arucos',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    # Event handler: cuando mision_dron termina, lanzar SLAM + TF publisher + RRT
     rrt_y_slam_handler = RegisterEventHandler(
         event_handler=OnProcessExit(
-            target_action=generador_mapa_node,
+            target_action=mision_dron_node,
             on_exit=[
+                publicador_tfs_node,
                 slam_occupancy_grid_node,
                 planificador_rrt_node
             ]
         )
     )
 
-    # Empaquetar y lanzar todo simultáneamente
+    # Empaquetar y lanzar todo simultaneamente
     return LaunchDescription([
         set_env,
         plugin_env,
@@ -330,12 +399,13 @@ def generate_launch_description():
         joy_node,
         teleop,
         detector_aruco_node,
-        static_map_to_odom,          # Puente TF: map → odom (identidad por defecto)
-        # map_server_node,        # Reemplazado por slam_occupancy_grid
-        # lifecycle_manager_node, # Ya no se necesita
+        static_map_to_odom,          # Puente TF: map -> odom (identidad por defecto)
         filtro_lidar_node,
-        generador_mapa_node,
+        optitrack_sim,
+        pose_fuser,
+        pid_controller,
+        plotter,
+        mision,
         rrt_y_slam_handler,
-        # slam_node,              # Reemplazado por slam_occupancy_grid
     ])
 
