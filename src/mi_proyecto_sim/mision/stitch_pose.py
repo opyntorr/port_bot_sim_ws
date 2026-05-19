@@ -1,290 +1,426 @@
-"""End-to-end pose-aware stitcher.
-
-Usage:
-    python3 -m mision.stitch_pose --input mision_output/16fotos \
-                                  --output mision_output/stitching_pose \
-                                  --debug
+#!/usr/bin/env python3
 """
-
+Stitcher por pose usando SIFT + Laplacian Pyramid (version vieja restaurada),
+pero adaptada para generar los mismos mapas y visualizaciones que la nueva version.
+"""
 from __future__ import annotations
 
 import argparse
+import json
+import math
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+import yaml
 
-from .io_utils import load_tiles, world_extent
-from .place_pose import (
-    PlaceConfig, footprint_pixels, make_canvas_spec,
-    prepare_tile, assign_canvas_centers, paste_phase_a, annotate_indices,
-    tile_layout_debug,
-)
-from .preprocess import clahe_lab, edge_image, grid_mask, estimate_tile_yaw
-from .refine_window import refine_all, RefineConfig
-from .solve_global import solve_positions, apply_positions, summarize_residuals
-from .blend_vote import blend_and_vote, label_to_ros_pgm, label_to_grid_vis, write_ros_map, mask_exterior, build_final_label, crop_to_arena
-from .tape_snap import snap_to_tape_grid
+from mision.blend_vote import write_ros_map, label_to_grid_vis
+
+def _load_camera_yaml(path: Path):
+    with open(path, 'r') as f:
+        data = yaml.safe_load(f)
+    K = np.array(data['camera_matrix']['data'], dtype=np.float64).reshape(3, 3)
+    D = np.array(data['distortion_coefficients']['data'], dtype=np.float64).flatten()
+    w = int(data['image_width'])
+    h = int(data['image_height'])
+    cam_rot = math.radians(float(data.get('camera_rotation_deg', 0.0)))
+    return K, D, w, h, cam_rot
 
 
-def _smooth_yaw(tiles, window: int = 3) -> None:
-    """Median-filter detected yaw across tile index order; replaces only outliers."""
-    yaws = np.array([t.yaw_deg for t in tiles], dtype=np.float64)
-    half = window // 2
-    for i in range(len(tiles)):
-        lo, hi = max(0, i - half), min(len(tiles), i + half + 1)
-        median = float(np.median(yaws[lo:hi]))
-        if abs(yaws[i] - median) > 5.0:
-            tiles[i].yaw_deg = median
+def _undistort(img, K, D):
+    h, w = img.shape[:2]
+    newK, _ = cv2.getOptimalNewCameraMatrix(K, D, (w, h), alpha=0.0)
+    und = cv2.undistort(img, K, D, None, newK)
+    return und, newK
+
+
+def _project_to_ground(img, newK, altitude_m, m_per_px):
+    h_img, w_img = img.shape[:2]
+    fx = newK[0, 0]
+    fy = newK[1, 1]
+    cx = newK[0, 2]
+    cy = newK[1, 2]
+
+    width_m  = altitude_m * w_img / fx
+    height_m = altitude_m * h_img / fy
+
+    w_out = max(1, int(round(width_m  / m_per_px)))
+    h_out = max(1, int(round(height_m / m_per_px)))
+
+    us, vs = np.meshgrid(np.arange(w_out, dtype=np.float32),
+                         np.arange(h_out, dtype=np.float32))
+    xg = (us - w_out / 2.0) * m_per_px
+    yg = (vs - h_out / 2.0) * m_per_px
+    map_x = (fx * (xg / altitude_m) + cx).astype(np.float32)
+    map_y = (fy * (yg / altitude_m) + cy).astype(np.float32)
+    ground = cv2.remap(
+        img, map_x, map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0),
+    )
+    return ground, width_m, height_m
+
+
+def _rotate_image(img, yaw_rad):
+    h, w = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), math.degrees(yaw_rad), 1.0)
+    cos = abs(M[0, 0])
+    sin = abs(M[0, 1])
+    nw = int((h * sin) + (w * cos))
+    nh = int((h * cos) + (w * sin))
+    M[0, 2] += (nw / 2.0) - w / 2.0
+    M[1, 2] += (nh / 2.0) - h / 2.0
+    rot = cv2.warpAffine(
+        img, M, (nw, nh),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0),
+    )
+    return rot
+
+
+def _distance_weight_mask(shape):
+    h, w = shape[:2]
+    y = np.linspace(-1.0, 1.0, h, dtype=np.float32)
+    x = np.linspace(-1.0, 1.0, w, dtype=np.float32)
+    xx, yy = np.meshgrid(x, y)
+    dist = np.clip(np.sqrt(xx ** 2 + yy ** 2), 0.0, 1.0)
+    return np.cos(dist * (math.pi / 2.0))
+
+
+def _build_detector():
+    for use_sift in (True, False):
+        try:
+            if use_sift:
+                det = cv2.SIFT_create(nfeatures=3000)
+                mat = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+                return det, mat, 'SIFT'
+            else:
+                det = cv2.ORB_create(nfeatures=3000)
+                mat = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+                return det, mat, 'ORB'
+        except Exception:
+            continue
+    return None, None, None
+
+
+def _feature_offset(canvas_f32, weight_sum, patch, u0, v0, det, matcher):
+    MAX_OFFSET = 25
+    MIN_OVERLAP_PX = 2000
+    MIN_MATCHES = 10
+
+    H, W = canvas_f32.shape[:2]
+    h_p, w_p = patch.shape[:2]
+
+    cu0, cv0_c = max(0, u0), max(0, v0)
+    cu1, cv1_c = min(W, u0 + w_p), min(H, v0 + h_p)
+    if cu0 >= cu1 or cv0_c >= cv1_c:
+        return 0, 0
+
+    overlap_w = weight_sum[cv0_c:cv1_c, cu0:cu1]
+    if float(overlap_w.max()) < 0.05:
+        return 0, 0
+
+    sx0 = cu0 - u0
+    sy0 = cv0_c - v0
+
+    patch_crop = patch[sy0:sy0 + (cv1_c - cv0_c), sx0:sx0 + (cu1 - cu0)]
+    ref_crop   = np.clip(canvas_f32[cv0_c:cv1_c, cu0:cu1], 0, 255).astype(np.uint8)
+
+    mask_new = (np.any(patch_crop != 0, axis=2)).astype(np.uint8) * 255
+    mask_ref = (overlap_w > 0.05).astype(np.uint8) * 255
+    mask_both = cv2.bitwise_and(mask_new, mask_ref)
+
+    if int(mask_both.sum()) // 255 < MIN_OVERLAP_PX:
+        return 0, 0
+
+    gray_ref = cv2.cvtColor(ref_crop,   cv2.COLOR_BGR2GRAY)
+    gray_new = cv2.cvtColor(patch_crop, cv2.COLOR_BGR2GRAY)
+
+    try:
+        kp1, des1 = det.detectAndCompute(gray_ref, mask_both)
+        kp2, des2 = det.detectAndCompute(gray_new, mask_both)
+
+        if des1 is None or des2 is None or len(kp1) < MIN_MATCHES or len(kp2) < MIN_MATCHES:
+            return 0, 0
+
+        matches = matcher.knnMatch(des1, des2, k=2)
+        good = [m for m, n in matches if m.distance < 0.75 * n.distance]
+        if len(good) < MIN_MATCHES:
+            return 0, 0
+
+        pts1 = np.float32([kp1[m.queryIdx].pt for m in good])
+        pts2 = np.float32([kp2[m.trainIdx].pt for m in good])
+        delta = pts1 - pts2
+
+        du = float(np.median(delta[:, 0]))
+        dv = float(np.median(delta[:, 1]))
+
+        if abs(du) > MAX_OFFSET or abs(dv) > MAX_OFFSET:
+            return 0, 0
+
+        return int(round(du)), int(round(dv))
+
+    except Exception:
+        return 0, 0
+
+
+def _multiband_blend(canvas_f32, weight_sum, patch, weight_mask, u0, v0, num_levels=4):
+    H, W = canvas_f32.shape[:2]
+    h_p, w_p = patch.shape[:2]
+
+    cu0, cv0 = max(0, u0), max(0, v0)
+    cu1, cv1 = min(W, u0 + w_p), min(H, v0 + h_p)
+    if cu0 >= cu1 or cv0 >= cv1:
+        return
+
+    roi_w = cu1 - cu0
+    roi_h = cv1 - cv0
+
+    sx0 = cu0 - u0
+    sy0 = cv0 - v0
+
+    A = canvas_f32[cv0:cv1, cu0:cu1].copy()
+    B = patch[sy0:sy0 + roi_h, sx0:sx0 + roi_w].astype(np.float32)
+
+    w_old = weight_sum[cv0:cv1, cu0:cu1]
+    w_new = weight_mask[sy0:sy0 + roi_h, sx0:sx0 + roi_w]
+
+    w_total = w_old + w_new
+    alpha   = np.where(w_total > 1e-8, w_new / w_total, 0.0).astype(np.float32)
+    alpha3  = np.stack([alpha] * 3, axis=-1)
+
+    A_init = np.where(w_old[:, :, None] < 1e-6, B, A)
+
+    max_levels = max(1, int(math.log2(min(roi_h, roi_w) + 1)))
+    levels = min(num_levels, max_levels)
+
+    def gaussian_pyr(img, lvls):
+        pyr = [img.copy()]
+        cur = img.copy()
+        for _ in range(lvls - 1):
+            cur = cv2.pyrDown(cur)
+            pyr.append(cur)
+        return pyr
+
+    def laplacian_pyr(img, lvls):
+        g = gaussian_pyr(img, lvls)
+        lp = []
+        for i in range(lvls - 1):
+            sz = (g[i].shape[1], g[i].shape[0])
+            up = cv2.pyrUp(g[i + 1], dstsize=sz)
+            lp.append(g[i] - up)
+        lp.append(g[-1].copy())
+        return lp
+
+    lp_A = laplacian_pyr(A_init, levels)
+    lp_B = laplacian_pyr(B,      levels)
+    gp_a = gaussian_pyr(alpha3,  levels)
+
+    blended = [la * (1.0 - ga) + lb * ga
+               for la, lb, ga in zip(lp_A, lp_B, gp_a)]
+
+    result = blended[-1]
+    for i in range(levels - 2, -1, -1):
+        sz = (blended[i].shape[1], blended[i].shape[0])
+        result = cv2.pyrUp(result, dstsize=sz) + blended[i]
+
+    canvas_f32[cv0:cv1, cu0:cu1] = np.clip(result, 0.0, 255.0)
+    weight_sum[cv0:cv1, cu0:cu1] += w_new
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, type=Path)
-    ap.add_argument("--output", required=True, type=Path)
-    ap.add_argument("--ppm", type=float, default=500.0)
-    ap.add_argument("--fov-v-deg", type=float, default=43.0)
-    ap.add_argument("--yaw-sign", type=float, default=1.0,
-                    help="Per-tile yaw multiplier applied to estimate_tile_yaw output. "
-                         "+1 (default) correctly corrects the drone heading tilt. "
-                         "-1 doubles the tilt instead of removing it.")
-    ap.add_argument("--yaw-axis-offset-deg", type=float, default=0.0)
-    ap.add_argument("--use-image-yaw", action="store_true",
-                    help="Estimate per-tile yaw from orange tape grid line angle. "
-                         "Replaces drifting Optitrack heading with image-derived heading; "
-                         "falls back to Optitrack yaw when detection confidence is low.")
-    ap.add_argument("--yaw-detrend", action="store_true",
-                    help="Replace each tile's yaw with the dataset mean yaw. "
-                         "Cancels monotonic heading drift (e.g. Optitrack) while "
-                         "preserving the mean orientation of the camera.")
-    ap.add_argument("--tape-snap", action="store_true",
-                    help="After Phase A, shift each tile so its tape lines align to a "
-                         "single global 90° grid detected from the images. Removes "
-                         "sub-tape-period position errors without phase-correlation aliasing.")
-    ap.add_argument("--tape-period-m", type=float, default=None,
-                    help="Tape grid period in metres (default: auto-estimated from images).")
-    ap.add_argument("--max-correction-frac", type=float, default=0.47,
-                    help="Max tape-snap correction as a fraction of tape period T "
-                         "(default 0.47 = T/2 - 8px safety margin). "
-                         "Old value was 0.333; increase to fix skipped tiles with large errors.")
-    ap.add_argument("--snap-method", default="auto",
-                    choices=["auto", "projection", "derotate", "hough"],
-                    help="Tape-snap phase-detection method. "
-                         "'auto' uses derotate for |rotation|>3°, projection otherwise. "
-                         "'derotate' rotates the mask to make tape lines axis-aligned. "
-                         "'hough' uses HoughLines intercepts at tile centre (native angle support).")
-    ap.add_argument("--search-radius-px", type=int, default=60)
-    ap.add_argument("--skip-refine", action="store_true",
-                    help="Use pose-prior placement only; skip Phase B/C.")
-    ap.add_argument("--seam-width", type=int, default=25,
-                    help="seam_cut blend transition width in pixels (default 25). "
-                         "Wider = smoother tape-line kinks from residual snap noise; "
-                         "narrower = harder transitions.")
-    ap.add_argument("--blend-mode", default="feather",
-                    choices=["feather", "gain", "multiband", "gain+multiband", "seam_cut", "strip_seam_cut"],
-                    help="RGB blending strategy. "
-                         "'feather': radial-Gaussian weighted average (default). "
-                         "'gain': per-tile brightness normalisation then feather. "
-                         "'multiband': 4-level Laplacian-pyramid blend. "
-                         "'gain+multiband': both gain comp and multiband. "
-                         "'seam_cut': winner-takes-all + 15px boundary blend + gain comp.")
-    ap.add_argument("--occ-min-frac", type=float, default=0.12,
-                    help="Fraction of tiles that must detect a canvas pixel as obstacle "
-                         "(default 0.12 = 12%%). Scales automatically with tile count: "
-                         "16 tiles → min 2 votes, 55 tiles → min 7 votes.")
-    ap.add_argument("--occ-close-px", type=int, default=12,
-                    help="Morphological closing radius for obstacle mask (px). "
-                         "Fills within-object detection gaps without bridging between "
-                         "separate objects. At 500px/m: 12px ≈ 2.4cm (default).")
-    ap.add_argument("--arena-size-m", type=float, default=None,
-                    help="Fixed arena canvas size in metres (e.g. 3.9 for a 3.9×3.9 m arena). "
-                         "Crops/pads the final map and mosaic to a square of this size, "
-                         "centred on the tape-grid centroid. Omit to keep the full canvas.")
+    ap.add_argument('--input',      required=True)
+    ap.add_argument('--output',     required=True)
+    ap.add_argument('--camera',     required=False, default="",
+                    help='Path al YAML de camara. Si se omite, se deduce.')
+    ap.add_argument('--resolution', type=float, default=0.002,
+                    help='Resolucion del canvas (m/px). 0.002 = 2 mm/px.')
+    ap.add_argument('--margin',     type=float, default=0.5,
+                    help='Margen extra (m) a cada lado del canvas.')
+    ap.add_argument('--levels',     type=int,   default=4,
+                    help='Niveles de la piramide Laplaciana para multi-band blending.')
+    ap.add_argument('--no-features', action='store_true',
+                    help='Desactivar correccion de offset por features.')
+    
+    # Compat arguments to avoid breaking existing commands
+    ap.add_argument("--use-image-yaw", action="store_true")
+    ap.add_argument("--tape-snap", action="store_true")
+    ap.add_argument("--skip-refine", action="store_true")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--map-name", default="occupancy_map")
+    
     args = ap.parse_args()
 
-    out = args.output
-    out.mkdir(parents=True, exist_ok=True)
+    in_dir  = Path(args.input)
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg = PlaceConfig(
-        ppm=args.ppm,
-        fov_v_deg=args.fov_v_deg,
-        yaw_sign=args.yaw_sign,
-        yaw_axis_offset_deg=args.yaw_axis_offset_deg,
-    )
+    photos = sorted(in_dir.glob('*.png'))
+    if not photos:
+        print(f'[stitcher] no se encontraron .png en {in_dir}', file=sys.stderr)
+        sys.exit(1)
 
-    # 1) Load.
-    tiles = load_tiles(args.input)
-    print(f"[stitch_pose] {len(tiles)} tiles, "
-          f"yaw range [{min(t.yaw_deg for t in tiles):+.2f}°, {max(t.yaw_deg for t in tiles):+.2f}°], "
-          f"z range [{min(t.z for t in tiles):.3f}, {max(t.z for t in tiles):.3f}]m")
-
-    # 2) Canvas.
-    extent = world_extent(tiles)
-    fp_max = max(footprint_pixels(t.z, t.img_h, cfg.fov_v_deg, cfg.ppm) for t in tiles)
-    spec = make_canvas_spec(extent, cfg, footprint_px_max=fp_max)
-    print(f"[stitch_pose] Canvas {spec.width}x{spec.height} px @ {cfg.ppm} px/m")
-
-    # 3) Phase A: pose-prior placement.
-    # Pre-compute CLAHE images (reused for yaw estimation and prepare_tile).
-    bgrs = [clahe_lab(t.img) for t in tiles]
-
-    if args.use_image_yaw:
-        # Pass 1: detect per-tile yaw from grid lines, update tile.yaw_deg.
-        n_detected = 0
-        for t, bgr in zip(tiles, bgrs):
-            orig = t.yaw_deg
-            detected = estimate_tile_yaw(bgr)
-            if detected is not None:
-                t.yaw_deg = detected
-                n_detected += 1
-                if args.debug:
-                    print(f"  wp_{t.idx:02d}: optitrack={orig:+.2f}° → image={t.yaw_deg:+.2f}°")
-        # Smooth: replace outliers (>5° from local median) with the median.
-        _smooth_yaw(tiles)
-        print(f"[stitch_pose] --use-image-yaw: {n_detected}/{len(tiles)} tiles used image yaw")
-
-    if args.yaw_detrend:
-        # Snap all tiles to the mean yaw (after image yaw detection if active).
-        # Removes per-tile variation so Phase B sees consistent overlap geometry,
-        # while preserving the true global arena tilt detected from the images.
-        mean_yaw = sum(t.yaw_deg for t in tiles) / len(tiles)
-        for t in tiles:
-            t.yaw_deg = mean_yaw
-        print(f"[stitch_pose] --yaw-detrend: all tile yaws set to mean {mean_yaw:+.2f}°")
-
-    # Pass 2: warp tiles with the (possibly updated) yaw values.
-    placed = []
-    for t, bgr in zip(tiles, bgrs):
-        placed.append(prepare_tile(t, cfg, preproc_bgr=bgr))
-    assign_canvas_centers(tiles, spec, placed)
-
-    # Phase A+: tape-grid snap — shift each tile so its tape lines align to a
-    # single global 90° reference grid detected from the images.
-    if args.tape_snap:
-        n_snapped = snap_to_tape_grid(
-            placed, ppm=cfg.ppm,
-            tape_period_m=args.tape_period_m,
-            max_correction_frac=args.max_correction_frac,
-            method=args.snap_method,
-            debug=args.debug,
-        )
-        print(f"[stitch_pose] --tape-snap: {n_snapped}/{len(placed)} tiles snapped to tape grid")
-
-    if args.debug:
-        layout = tile_layout_debug(tiles, placed, cfg, spec.height, spec.width)
-        cv2.imwrite(str(out / "debug_tile_layout.png"), layout)
-
-    # 4) Phase B: sliding-window refinement.
-    if not args.skip_refine:
-        rcfg = RefineConfig(search_radius_px=args.search_radius_px)
-        print(f"[stitch_pose] Refining {len(placed)} tiles with phaseCorrelate "
-              f"(±{rcfg.search_radius_px}px search)...")
-        # Grayscale of CLAHE image: includes both tape lines and aperiodic floor
-        # content (objects, shadows), which helps break grid periodicity.
-        def _gray_func(bgr: np.ndarray) -> np.ndarray:
-            return cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        pairs = refine_all(spec.height, spec.width, placed, _gray_func, rcfg)
-        accepted = [p for p in pairs if p.accepted]
-        print(f"[stitch_pose] Phase B: {len(accepted)}/{len(pairs)} pairs accepted "
-              f"(min_score={rcfg.min_score})")
-        if args.debug:
-            with open(out / "debug_pairs.txt", "w") as f:
-                for pr in pairs:
-                    f.write(
-                        f"({pr.i:02d},{pr.j:02d})  "
-                        f"prior=({pr.dx_prior:+.1f},{pr.dy_prior:+.1f})  "
-                        f"refined=({pr.dx_refined:+.1f},{pr.dy_refined:+.1f})  "
-                        f"delta=({pr.dx_refined - pr.dx_prior:+.1f},{pr.dy_refined - pr.dy_prior:+.1f})  "
-                        f"score={pr.score:+.4f}  {'OK' if pr.accepted else 'REJECTED'}\n"
-                    )
-
-        # 5) Phase C: global solve.
-        if accepted:
-            positions = solve_positions(placed, pairs, anchor_idx=0)
-            print(f"[stitch_pose] Phase C: {summarize_residuals(pairs, positions)}")
-            apply_positions(placed, positions)
+    camera_yaml = args.camera
+    if not camera_yaml:
+        # Detect camera config based on metadata (pose_src) or directory name
+        meta_path = photos[0].with_suffix('.json')
+        meta0 = {}
+        if meta_path.exists():
+            with open(meta_path, 'r') as f:
+                meta0 = json.load(f)
+        if meta0.get('pose_src', '') == 'odometria' or 'sim' in str(in_dir):
+            camera_yaml = str(Path(__file__).parent.parent / "config" / "camera_tello_sim.yaml")
         else:
-            print("[stitch_pose] WARN: no accepted pairs — falling back to pose-only placement")
+            camera_yaml = str(Path(__file__).parent.parent / "config" / "camera_tello.yaml")
+            
+    print(f'[stitcher] Usando config de camara: {camera_yaml}')
+    K, D, _, _, cam_rot = _load_camera_yaml(Path(camera_yaml))
 
-    # 6) Blending + voting.
-    print(f"[stitch_pose] Blending ({args.blend_mode}) + per-mask voting...")
-    mosaic, label, seam_vis, prob_stack, occ_count, coverage_count = blend_and_vote(
-        tiles, placed, cfg, spec.height, spec.width,
-        blend_mode=args.blend_mode, seam_width_px=args.seam_width,
-    )
-    label, mosaic, interior_mask = mask_exterior(label, mosaic)
-    n_interior = int(interior_mask.sum())
-    n_total = interior_mask.size
-    print(f"[stitch_pose] mask_exterior: {100*n_interior/n_total:.1f}% interior, "
-          f"{100*(n_total-n_interior)/n_total:.1f}% exterior masked")
+    # ── 1. Proyectar + rotar + generar weight masks ──────────────────────────
+    projected = []
+    weight_masks = []
+    poses = []
 
-    # Build final occupancy map from direct color detection on the blended mosaic.
-    # Coverage-normalized vote fraction: corners/edges get fair treatment.
-    print(f"[stitch_pose] occ_min_frac={args.occ_min_frac:.0%} (coverage-normalized per pixel)")
-    label = build_final_label(mosaic, interior_mask, label_grid_ref=label,
-                              occ_count=occ_count,
-                              coverage_count=coverage_count,
-                              occ_min_frac=args.occ_min_frac,
-                              occ_close_px=args.occ_close_px)
-    print("[stitch_pose] build_final_label: occupancy map rebuilt from mosaic colour")
+    for ph in photos:
+        meta_path = ph.with_suffix('.json')
+        if not meta_path.exists():
+            continue
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        img = cv2.imread(str(ph))
+        if img is None:
+            continue
+        und, newK = _undistort(img, K, D)
+        altitude = float(meta['z'])
+        if altitude <= 0.1:
+            continue
 
-    # Optional: crop both mosaic and label to a fixed arena square.
-    crop_offset = (0, 0)
-    if args.arena_size_m is not None:
-        label, mosaic, crop_offset = crop_to_arena(label, mosaic, args.arena_size_m, cfg.ppm)
-        arena_px = int(round(args.arena_size_m * cfg.ppm))
-        print(f"[stitch_pose] crop_to_arena: {arena_px}×{arena_px} px "
-              f"({args.arena_size_m}m × {args.arena_size_m}m)")
+        ground, _, _ = _project_to_ground(und, newK, altitude, args.resolution)
+        if 'yaw' in meta:
+            yaw = float(meta['yaw'])
+        elif 'yaw_deg' in meta:
+            yaw = math.radians(float(meta['yaw_deg']))
+        else:
+            yaw = 0.0
+            
+        rotated = _rotate_image(ground, yaw + cam_rot)
 
-    if args.debug:
-        canvas_a, _ = paste_phase_a(spec, placed)
-        canvas_a[~interior_mask] = 0
-        cv2.imwrite(str(out / "debug_phase_a.png"), annotate_indices(canvas_a, placed))
+        wmask = _distance_weight_mask(rotated.shape)
+        content = np.any(rotated != 0, axis=2).astype(np.float32)
+        wmask  *= content
 
-    label_stamp = f"blend={args.blend_mode}"
-    cv2.putText(mosaic, label_stamp, (12, 36),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 4, cv2.LINE_AA)
-    cv2.putText(mosaic, label_stamp, (12, 36),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 0), 2, cv2.LINE_AA)
-    cv2.imwrite(str(out / "mosaic_pose.png"), mosaic)
-    cv2.imwrite(str(out / "mosaic_seams.png"), seam_vis)
+        projected.append(rotated)
+        weight_masks.append(wmask)
+        poses.append((float(meta['x']), float(meta['y']), yaw, rotated.shape))
 
-    # 7) ROS map.
-    pgm_img = label_to_ros_pgm(label)
-    # Origin in world coordinates: the canvas origin (top-left) corresponds to world (x_min - margin/ppm, y_max + margin/ppm).
-    # ROS uses bottom-left origin, so we flip the image vertically and compute origin accordingly.
-    pgm_flipped = cv2.flip(pgm_img, 0)
-    resolution = 1.0 / cfg.ppm
-    # Canvas top-left in world coords (adjusted for crop offset if arena crop was applied):
-    world_x_left = extent.x_min - cfg.margin_px / cfg.ppm + crop_offset[0] / cfg.ppm
-    world_y_top = extent.y_max + cfg.margin_px / cfg.ppm - crop_offset[1] / cfg.ppm
-    # Bottom-left after vflip:
-    world_y_bottom = world_y_top - pgm_img.shape[0] / cfg.ppm
+    if not projected:
+        print('[stitcher] sin fotos validas', file=sys.stderr)
+        sys.exit(2)
+
+    # ── 2. Canvas global ─────────────────────────────────────────────────────
+    xs_min, xs_max, ys_min, ys_max = [], [], [], []
+    for (cx_w, cy_w, _y, shp) in poses:
+        h_p, w_p = shp[:2]
+        hw = (w_p * args.resolution) / 2.0
+        hh = (h_p * args.resolution) / 2.0
+        xs_min.append(cx_w - hw);  xs_max.append(cx_w + hw)
+        ys_min.append(cy_w - hh);  ys_max.append(cy_w + hh)
+
+    x_min = min(xs_min) - args.margin
+    x_max = max(xs_max) + args.margin
+    y_min = min(ys_min) - args.margin
+    y_max = max(ys_max) + args.margin
+
+    W = int(math.ceil((x_max - x_min) / args.resolution))
+    H = int(math.ceil((y_max - y_min) / args.resolution))
+
+    canvas_f32  = np.zeros((H, W, 3), dtype=np.float32)
+    weight_sum  = np.zeros((H, W),    dtype=np.float32)
+
+    # ── 3. Feature detector ──────────────────────────────────────────────────
+    det = matcher = None
+    if not args.no_features:
+        det, matcher, det_name = _build_detector()
+        if det is not None:
+            print(f'[stitcher] Feature detector: {det_name}')
+        else:
+            print('[stitcher] Sin detector disponible.', file=sys.stderr)
+
+    # ── 4. Pegar fotos: correccion features + multi-band blend ───────────────
+    for img, wmask, (cx_w, cy_w, _y, _shp) in zip(projected, weight_masks, poses):
+        h_p, w_p = img.shape[:2]
+
+        cu     = int(round((cx_w - x_min) / args.resolution))
+        cv_pix = int(round((y_max - cy_w) / args.resolution))
+        u0 = cu     - w_p // 2
+        v0 = cv_pix - h_p // 2
+
+        if det is not None and weight_sum.max() > 0.05:
+            du, dv = _feature_offset(canvas_f32, weight_sum, img, u0, v0, det, matcher)
+            if du != 0 or dv != 0:
+                print(f'[stitcher] features offset ({du:+d}, {dv:+d}) px')
+            u0 += du
+            v0 += dv
+
+        _multiband_blend(canvas_f32, weight_sum, img, wmask, u0, v0, num_levels=args.levels)
+
+    # ── 5. Guardar mosaico y binarizar ───────────────────────────────────────
+    canvas = np.clip(canvas_f32, 0, 255).astype(np.uint8)
+    mosaic_path = out_dir / 'mosaic_pose.png'
+    cv2.imwrite(str(mosaic_path), canvas)
+
+    print('[stitcher] Generando mapa binarizado de ocupacion...')
+    hsv = cv2.cvtColor(canvas, cv2.COLOR_BGR2HSV)
+    
+    covered = (weight_sum > 0)
+    occ = np.full(canvas.shape[:2], 205, dtype=np.uint8)
+    occ[covered] = 254  # Por defecto el espacio cubierto es libre
+    
+    # Detectar obstáculos reales: cajas azules y muros blancos
+    obs_blue = cv2.inRange(hsv, (85, 60, 60), (150, 255, 255))
+    obs_wall = cv2.inRange(hsv, (0, 0, 180), (179, 60, 255))
+    obstacles = cv2.bitwise_or(obs_blue, obs_wall)
+    
+    k3 = np.ones((3, 3), np.uint8)
+    obstacles = cv2.morphologyEx(obstacles, cv2.MORPH_OPEN, k3)
+    obstacles = cv2.morphologyEx(obstacles, cv2.MORPH_CLOSE, k3, iterations=2)
+    
+    occ[covered & (obstacles > 0)] = 0
+    label = occ
+
+    # ── 6. Mapas ROS y de visualizacion ──────────────────────────────────────
+    # Origen en coordenadas de mundo
+    world_x_left = x_min
+    world_y_bottom = y_max - (H * args.resolution)
+    
+    pgm_flipped = cv2.flip(label, 0)
     write_ros_map(
-        pgm_flipped, out, args.map_name, resolution,
+        pgm_flipped, out_dir, args.map_name, args.resolution,
         origin_xy=(world_x_left, world_y_bottom),
     )
-    cv2.imwrite(str(out / (args.map_name + "_vis.png")), pgm_img)
-    tape_period_px = 0.53 * cfg.ppm  # 48cm tile + 5cm tape = 53cm
-    grid_vis = label_to_grid_vis(label, tape_period_px=tape_period_px)
-    cv2.imwrite(str(out / (args.map_name + "_grid.png")), grid_vis)
+    cv2.imwrite(str(out_dir / (args.map_name + "_vis.png")), label)
 
-    # Overlay: mosaic at 50% alpha over the binary map.
-    map_bgr = cv2.cvtColor(pgm_img, cv2.COLOR_GRAY2BGR)
-    overlay = cv2.addWeighted(map_bgr, 0.5, mosaic, 0.5, 0)
-    cv2.imwrite(str(out / (args.map_name + "_overlay.png")), overlay)
-    print(f"[stitch_pose] Wrote {out/(args.map_name + '.pgm')} ({pgm_img.shape[1]}x{pgm_img.shape[0]}, "
-          f"res={resolution:.4f} m/px)")
+    from mision.blend_vote import L_UNKNOWN, L_FREE, L_OCCUPIED
+    semantic_label = np.full(label.shape, L_UNKNOWN, dtype=np.uint8)
+    semantic_label[label == 254] = L_FREE
+    semantic_label[label == 0]   = L_OCCUPIED
 
-    # Optional landmark layer (grid only).
-    if args.debug:
-        grid_layer = (prob_stack[3] * 255).clip(0, 255).astype(np.uint8)
-        cv2.imwrite(str(out / "landmark_grid.png"), grid_layer)
+    ppm = 1.0 / args.resolution
+    tape_period_px = 0.53 * ppm
+    grid_vis = label_to_grid_vis(semantic_label, tape_period_px=tape_period_px)
+    cv2.imwrite(str(out_dir / (args.map_name + "_grid.png")), grid_vis)
 
-    print(f"[stitch_pose] Done. Outputs in {out}")
+    map_bgr = cv2.cvtColor(label, cv2.COLOR_GRAY2BGR)
+    overlay = cv2.addWeighted(map_bgr, 0.5, canvas, 0.5, 0)
+    cv2.imwrite(str(out_dir / (args.map_name + "_overlay.png")), overlay)
+
+    print(f'[stitcher] Wrote {out_dir/(args.map_name + ".pgm")} ({W}x{H}, res={args.resolution:.4f} m/px)')
+    print(f'[stitcher] Done. Outputs in {out_dir}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
