@@ -479,39 +479,41 @@ class MisionDron(Node):
             yaw_rad = math.radians(float(meta['yaw_deg']))
             theta = yaw_rad + cam_rot
 
-            for target, name in [(ARUCO_CARRITO_ID, 'carrito'), (ARUCO_META_ID, 'meta')]:
-                if target in ids_flat:
-                    idx = ids_flat.index(target)
-                    pts = corners[idx][0]
-                    u = float(np.mean(pts[:, 0]))
-                    v = float(np.mean(pts[:, 1]))
+            known_names = {ARUCO_CARRITO_ID: 'carrito', ARUCO_META_ID: 'meta'}
+            
+            for idx, target in enumerate(ids_flat):
+                name = known_names.get(target, f'aruco_{target}')
+                
+                pts = corners[idx][0]
+                u = float(np.mean(pts[:, 0]))
+                v = float(np.mean(pts[:, 1]))
+                
+                # Distancia al centro de la imagen
+                dist_to_center = math.hypot(u - w_cam/2.0, v - h_cam/2.0)
+                
+                if name not in best_detections or dist_to_center < best_detections[name]['dist']:
+                    x_cam = (u - cx_cam) * altitude / fx
+                    y_cam = (v - cy_cam) * altitude / fy
                     
-                    # Distancia al centro de la imagen
-                    dist_to_center = math.hypot(u - w_cam/2.0, v - h_cam/2.0)
+                    dx_rot = x_cam * math.cos(theta) + y_cam * math.sin(theta)
+                    dy_rot = -x_cam * math.sin(theta) + y_cam * math.cos(theta)
                     
-                    if name not in best_detections or dist_to_center < best_detections[name]['dist']:
-                        x_cam = (u - cx_cam) * altitude / fx
-                        y_cam = (v - cy_cam) * altitude / fy
-                        
-                        dx_rot = x_cam * math.cos(theta) + y_cam * math.sin(theta)
-                        dy_rot = -x_cam * math.sin(theta) + y_cam * math.cos(theta)
-                        
-                        world_x = wp_x + dx_rot
-                        world_y = wp_y - dy_rot
-                        
-                        dx = pts[1][0] - pts[0][0]
-                        dy = pts[1][1] - pts[0][1]
-                        yaw_img = math.atan2(dy, dx)
-                        yaw_world = -yaw_img - theta
-                        
-                        best_detections[name] = {
-                            'id': int(target),
-                            'world_x': float(world_x),
-                            'world_y': float(world_y),
-                            'yaw_world': float(yaw_world),
-                            'dist': dist_to_center,
-                            'source_img': img_path.name
-                        }
+                    world_x = wp_x + dx_rot
+                    world_y = wp_y - dy_rot
+                    
+                    dx = pts[1][0] - pts[0][0]
+                    dy = pts[1][1] - pts[0][1]
+                    yaw_img = math.atan2(dy, dx)
+                    yaw_world = -yaw_img - theta
+                    
+                    best_detections[name] = {
+                        'id': int(target),
+                        'world_x': float(world_x),
+                        'world_y': float(world_y),
+                        'yaw_world': float(yaw_world),
+                        'dist': dist_to_center,
+                        'source_img': img_path.name
+                    }
                         
         for name, data in best_detections.items():
             self.get_logger().info(f"ArUco {name} (id={data['id']}) detectado en {data['source_img']} a dist={data['dist']:.1f}px -> MUNDO: ({data['world_x']:.2f}, {data['world_y']:.2f})")
