@@ -301,7 +301,7 @@ def snap_to_tape_grid(
     placed: List[PlacedTile],
     ppm: float = 500.0,
     tape_period_m: Optional[float] = None,
-    max_correction_frac: float = 1.0 / 3,
+    max_correction_frac: float = 0.47,
     method: str = "auto",
     debug: bool = False,
 ) -> int:
@@ -359,42 +359,116 @@ def snap_to_tape_grid(
     ref_y = _robust_ref_phase(valid_y, T) if valid_y else None
     ref_x = _robust_ref_phase(valid_x, T) if valid_x else None
 
+    # Pass 1: compute wrapped deltas (None = phase missing or exceeds max_corr).
+    def _wrap(delta: float) -> float:
+        if delta > T / 2:
+            delta -= T
+        if delta < -T / 2:
+            delta += T
+        return delta
+
+    raw_dy: List[Optional[float]] = []
+    raw_dx: List[Optional[float]] = []
+    for cy_phase, cx_phase in zip(canvas_phases_y, canvas_phases_x):
+        dy: Optional[float] = None
+        if ref_y is not None and cy_phase is not None:
+            d = _wrap(cy_phase - ref_y)
+            dy = d if abs(d) <= max_corr else None
+        raw_dy.append(dy)
+
+        dx: Optional[float] = None
+        if ref_x is not None and cx_phase is not None:
+            d = _wrap(cx_phase - ref_x)
+            dx = d if abs(d) <= max_corr else None
+        raw_dx.append(dx)
+
+    # Pass 2: neighborhood consistency filter.
+    # If a tile's correction disagrees with its local neighbors' median by more
+    # than T/3, the phase detector likely locked to the wrong tape line (aliasing).
+    # Replace the aliased correction with the neighborhood median so the tile still
+    # snaps to the tape grid (at the consensus position) rather than staying at its
+    # raw OptiTrack location, which can overlap with neighbours and duplicate objects.
+    def _consistency_filter(
+        deltas: List[Optional[float]], radius: int = 2, max_dev_frac: float = 0.33,
+    ) -> Tuple[List[Optional[float]], List[bool]]:
+        """Returns (filtered_deltas, was_replaced) — aliased entries replaced with median."""
+        n = len(deltas)
+        replaced = [False] * n
+        if n < 5:
+            return list(deltas), replaced
+        max_dev = T * max_dev_frac
+        result = list(deltas)
+        for i in range(n):
+            if result[i] is None:
+                continue
+            nbr = [deltas[j] for j in range(max(0, i - radius), min(n, i + radius + 1))
+                   if j != i and deltas[j] is not None]
+            if len(nbr) < 2:
+                continue
+            med = float(np.median(nbr))
+            if abs(result[i] - med) > max_dev:
+                result[i] = med   # snap to consensus instead of wrong tape line
+                replaced[i] = True
+        return result, replaced
+
+    filt_dy, replaced_dy = _consistency_filter(raw_dy)
+    filt_dx, replaced_dx = _consistency_filter(raw_dx)
+
+    # Pass 3: apply filtered deltas.
+    # Also store raw delta for tiles that exceeded max_corr (for debug SKIP label).
+    over_corr_dy: List[Optional[float]] = []
+    over_corr_dx: List[Optional[float]] = []
+    for cy_phase, cx_phase in zip(canvas_phases_y, canvas_phases_x):
+        oy: Optional[float] = None
+        if ref_y is not None and cy_phase is not None:
+            d = _wrap(cy_phase - ref_y)
+            if abs(d) > max_corr:
+                oy = d
+        over_corr_dy.append(oy)
+        ox: Optional[float] = None
+        if ref_x is not None and cx_phase is not None:
+            d = _wrap(cx_phase - ref_x)
+            if abs(d) > max_corr:
+                ox = d
+        over_corr_dx.append(ox)
+
     n_snapped = 0
     n_skipped = 0
-    for p, cy_phase, cx_phase in zip(placed, canvas_phases_y, canvas_phases_x):
+    n_alias = 0
+    for i, (p, raw_y, raw_x, dy, dx) in enumerate(
+        zip(placed, raw_dy, raw_dx, filt_dy, filt_dx)
+    ):
         shifted = False
 
-        if ref_y is not None and cy_phase is not None:
-            delta = cy_phase - ref_y
-            if delta > T / 2:
-                delta -= T
-            if delta < -T / 2:
-                delta += T
-            if abs(delta) <= max_corr:
+        if dy is not None:
+            tag = f"ALIAS_FIX({raw_y:+.0f}→{dy:+.1f}px)" if replaced_dy[i] else f"{dy:+.1f}px"
+            if replaced_dy[i]:
+                n_alias += 1
+            if debug:
+                print(f"  wp_{p.idx:02d} dy={tag}  dx=", end="")
+            p.cy -= dy
+            shifted = True
+        else:
+            oc = over_corr_dy[i]
+            if oc is not None:
                 if debug:
-                    print(f"  wp_{p.idx:02d} dy={delta:+.1f}px  dx=", end="")
-                p.cy -= delta
-                shifted = True
-            else:
-                if debug:
-                    print(f"  wp_{p.idx:02d} dy=SKIP({delta:+.0f}px)  dx=", end="")
+                    print(f"  wp_{p.idx:02d} dy=SKIP({oc:+.0f}px)  dx=", end="")
                 n_skipped += 1
+            elif debug:
+                print(f"  wp_{p.idx:02d} dy=n/a  dx=", end="")
 
-        if ref_x is not None and cx_phase is not None:
-            delta = cx_phase - ref_x
-            if delta > T / 2:
-                delta -= T
-            if delta < -T / 2:
-                delta += T
-            if abs(delta) <= max_corr:
-                if debug:
-                    print(f"{delta:+.1f}px")
-                p.cx -= delta
-                shifted = True
-            else:
-                if debug:
-                    print(f"SKIP({delta:+.0f}px)")
-                n_skipped += 1
+        if dx is not None:
+            tag = f"ALIAS_FIX({raw_x:+.0f}→{dx:+.1f}px)" if replaced_dx[i] else f"{dx:+.1f}px"
+            if debug:
+                print(tag)
+            p.cx -= dx
+            shifted = True
+        elif over_corr_dx[i] is not None:
+            if debug:
+                print(f"SKIP({over_corr_dx[i]:+.0f}px)")
+        else:
+            if debug:
+                print("n/a")
 
         if shifted:
             n_snapped += 1
@@ -402,7 +476,8 @@ def snap_to_tape_grid(
     ry = f"{ref_y:.1f}" if ref_y is not None else "n/a"
     rx = f"{ref_x:.1f}" if ref_x is not None else "n/a"
     print(f"[tape_snap] snapped {n_snapped}/{len(placed)} tiles, "
-          f"skipped {n_skipped} axis-corrections > {max_corr:.0f}px "
+          f"skipped {n_skipped} axis-corrections > {max_corr:.0f}px, "
+          f"alias-fixed {n_alias} "
           f"(ref_y={ry}px, ref_x={rx}px)")
 
     return n_snapped

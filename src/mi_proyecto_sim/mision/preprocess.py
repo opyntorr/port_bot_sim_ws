@@ -32,11 +32,68 @@ def grid_mask(bgr: np.ndarray) -> np.ndarray:
 
 
 def obstacle_mask(bgr: np.ndarray) -> np.ndarray:
+    """Detect blue/cyan boxes; fill each blob's convex hull for solid shapes."""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    m = cv2.inRange(hsv, (100, 80, 60), (130, 255, 255))
+    m = cv2.inRange(hsv, (85, 60, 60), (150, 255, 255))
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k)
-    return cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(m)
+    for cnt in cnts:
+        if cv2.contourArea(cnt) > 3000:
+            cv2.fillPoly(filled, [cv2.convexHull(cnt)], 255)
+    return filled
+
+
+def marker_mask(orig_bgr: np.ndarray, out_hw: "tuple[int,int] | None" = None) -> np.ndarray:
+    """Detect bright square floor markers (ArUco, QR, etc.) by visual appearance.
+
+    Works on the full-resolution tile image so the pattern details are intact.
+    Criteria: bright (mean >170), roughly square (aspect >0.65), small enough to
+    be a floor marker (<150px side), high internal contrast (std >30 inside),
+    dark outer border.  Returns a dilated filled mask at out_hw if given.
+    """
+    h, w = orig_bgr.shape[:2]
+    out = np.zeros((h, w), dtype=np.uint8)
+    gray = cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2GRAY)
+
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                    cv2.THRESH_BINARY, 31, -5)
+    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in cnts:
+        area = cv2.contourArea(cnt)
+        if area < 400 or area > 12000:
+            continue
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        if cw > 150 or ch > 150:
+            continue
+        if min(cw, ch) / max(cw, ch) < 0.65:
+            continue
+        m = np.zeros_like(gray)
+        cv2.drawContours(m, [cnt], -1, 255, -1)
+        if float(gray[m > 0].mean()) < 170:
+            continue
+        # High internal contrast (black/white cells inside the marker).
+        ix, iy = x + cw // 5, y + ch // 5
+        inner = gray[iy: iy + ch * 3 // 5, ix: ix + cw * 3 // 5]
+        if inner.size == 0 or float(inner.std()) < 30:
+            continue
+        # Dark outer border (ArUco has a black frame around it).
+        bx0, by0 = max(0, x - 5), max(0, y - 5)
+        bx1, by1 = min(w, x + cw + 5), min(h, y + ch + 5)
+        border = gray[by0:by1, bx0:bx1].copy()
+        omask = np.ones_like(border) * 255
+        omask[y - by0: y - by0 + ch, x - bx0: x - bx0 + cw] = 0
+        if omask.any() and float(border[omask > 0].mean()) > 120:
+            continue
+        cv2.fillPoly(out, [cnt], 255)
+
+    if out.any():
+        out = cv2.dilate(out, np.ones((15, 15), np.uint8))
+    if out_hw is not None and (h, w) != (out_hw[0], out_hw[1]):
+        out = cv2.resize(out, (out_hw[1], out_hw[0]), interpolation=cv2.INTER_NEAREST)
+    return out
 
 
 def wall_mask(bgr: np.ndarray) -> np.ndarray:

@@ -162,5 +162,52 @@ def annotate_indices(canvas: np.ndarray, placed: List[PlacedTile]) -> np.ndarray
         txt = f"wp_{p.idx:02d}"
         org = (int(p.cx) - 30, int(p.cy))
         cv2.putText(out, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
-        cv2.circle(out, (int(p.cx), int(p.cy)), 4, (0, 0, 255), -1)
+        cv2.circle(out, (int(p.cx), int(p.cy)), 4, (0, 255, 0), -1)
+    return out
+
+
+def tile_layout_debug(
+    tiles: "List[Tile]",
+    placed: List[PlacedTile],
+    cfg: PlaceConfig,
+    canvas_h: int,
+    canvas_w: int,
+) -> np.ndarray:
+    """Gray canvas with rotated red tile outlines, numbers, and blue flight-order arrows.
+
+    Each tile's pre-rotation footprint is drawn as a rotated red rectangle so the
+    position and orientation of every image is immediately clear.  A thin blue line
+    connecting consecutive tiles shows the lawnmower flight path.
+    """
+    out = np.full((canvas_h, canvas_w, 3), 220, dtype=np.uint8)
+
+    tile_by_idx = {t.idx: t for t in tiles}
+
+    # Blue flight-path lines (index order).
+    centers = [(int(round(p.cx)), int(round(p.cy))) for p in placed]
+    for i in range(len(centers) - 1):
+        cv2.line(out, centers[i], centers[i + 1], (180, 120, 0), 1, cv2.LINE_AA)
+
+    for p in placed:
+        tile = tile_by_idx[p.idx]
+        fp = footprint_pixels(tile.z, tile.img_h, cfg.fov_v_deg, cfg.ppm)
+        scale = fp / float(tile.img_h)
+        new_w = max(8, int(round(tile.img_w * scale)))
+        new_h = fp
+
+        # cv2.boxPoints angle: positive = CW; rotation_deg is CCW → negate.
+        rect = ((float(p.cx), float(p.cy)), (float(new_w), float(new_h)), -p.rotation_deg)
+        box = cv2.boxPoints(rect).astype(np.intp)
+        cv2.drawContours(out, [box], 0, (0, 0, 200), 2, cv2.LINE_AA)
+
+        # Number label centred on tile.
+        label = str(p.idx)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2)
+        org = (int(p.cx) - tw // 2, int(p.cy) + th // 2)
+        cv2.putText(out, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(out, label, org, cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 220), 1, cv2.LINE_AA)
+
+        # Small dot at centre.
+        cv2.circle(out, (int(p.cx), int(p.cy)), 3, (0, 0, 200), -1)
+
     return out
