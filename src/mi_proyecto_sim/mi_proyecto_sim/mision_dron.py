@@ -369,7 +369,7 @@ class MisionDron(Node):
 
         stitched = cv2.imread(str(panorama_path))
 
-        cart_meta = self._detect_aruco_positions(stitched)
+        cart_meta = self._detect_aruco_positions_from_photos()
 
         # Color-based binarization: dark floor tiles + orange grid lines = free;
         # everything else within coverage = obstacle (walls, boxes, etc.)
@@ -420,62 +420,116 @@ class MisionDron(Node):
         self.get_logger().info(f'Mapa: {pgm_path} ({w}x{h}, res={resolution:.4f} m/px)')
 
         if cart_meta:
-            self._publish_aruco_tfs(cart_meta, w, h, resolution)
+            self._publish_aruco_tfs(cart_meta)
             with open(self.out_dir / 'arucos.yaml', 'w') as f:
                 yaml.dump(cart_meta, f)
 
-    def _detect_aruco_positions(self, image):
+    def _detect_aruco_positions_from_photos(self):
+        camera_yaml = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'config' / ('camera_tello.yaml' if self.real else 'camera_tello_sim.yaml')
+        with open(camera_yaml, 'r') as f:
+            cam_data = yaml.safe_load(f)
+        
+        K = np.array(cam_data['camera_matrix']['data'], dtype=np.float64).reshape(3, 3)
+        D = np.array(cam_data['distortion_coefficients']['data'], dtype=np.float64).flatten()
+        w_cam = int(cam_data['image_width'])
+        h_cam = int(cam_data['image_height'])
+        cam_rot = math.radians(float(cam_data.get('camera_rotation_deg', 0.0)))
+        
+        newK, _ = cv2.getOptimalNewCameraMatrix(K, D, (w_cam, h_cam), alpha=0.0)
+        fx, fy = newK[0, 0], newK[1, 1]
+        cx_cam, cy_cam = newK[0, 2], newK[1, 2]
+
         try:
             aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
             parameters = cv2.aruco.DetectorParameters_create()
-            corners, ids, _ = cv2.aruco.detectMarkers(image, aruco_dict, parameters=parameters)
+            detector = None
         except AttributeError:
             aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
             parameters = cv2.aruco.DetectorParameters()
             detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
-            corners, ids, _ = detector.detectMarkers(image)
 
-        results = {}
-        if ids is None:
-            self.get_logger().warn('Ningun ArUco detectado en el panorama')
-            return results
-        ids_flat = ids.flatten().tolist()
-        for target, name in [(ARUCO_CARRITO_ID, 'carrito'), (ARUCO_META_ID, 'meta')]:
-            if target not in ids_flat:
-                self.get_logger().warn(f'ArUco id={target} ({name}) no detectado')
+        best_detections = {}
+
+        for img_path in sorted(self.fotos_dir.glob('wp_*.png')):
+            json_path = img_path.with_suffix('.json')
+            if not json_path.exists():
                 continue
-            i = ids_flat.index(target)
-            pts = corners[i][0]
-            cx = float(np.mean(pts[:, 0]))
-            cy = float(np.mean(pts[:, 1]))
-            dx = pts[1][0] - pts[0][0]
-            dy = pts[1][1] - pts[0][1]
-            yaw_img = math.atan2(dy, dx)
-            results[name] = {
-                'id': int(target),
-                'px_x': cx,
-                'px_y': cy,
-                'yaw_img': float(yaw_img),
-            }
-            self.get_logger().info(f'ArUco {name} (id={target}) px=({cx:.0f},{cy:.0f})')
-        return results
+            
+            with open(json_path, 'r') as f:
+                meta = json.load(f)
+                
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+                
+            img_undistorted = cv2.undistort(img, K, D, None, newK)
+            
+            if detector is not None:
+                corners, ids, _ = detector.detectMarkers(img_undistorted)
+            else:
+                corners, ids, _ = cv2.aruco.detectMarkers(img_undistorted, aruco_dict, parameters=parameters)
+                
+            if ids is None:
+                continue
+                
+            ids_flat = ids.flatten().tolist()
+            altitude = float(meta['z'])
+            wp_x = float(meta['x'])
+            wp_y = float(meta['y'])
+            yaw_rad = math.radians(float(meta['yaw_deg']))
+            theta = yaw_rad + cam_rot
 
-    def _publish_aruco_tfs(self, cart_meta, img_w, img_h, resolution):
-        cx_img = img_w / 2.0
-        cy_img = img_h / 2.0
+            for target, name in [(ARUCO_CARRITO_ID, 'carrito'), (ARUCO_META_ID, 'meta')]:
+                if target in ids_flat:
+                    idx = ids_flat.index(target)
+                    pts = corners[idx][0]
+                    u = float(np.mean(pts[:, 0]))
+                    v = float(np.mean(pts[:, 1]))
+                    
+                    # Distancia al centro de la imagen
+                    dist_to_center = math.hypot(u - w_cam/2.0, v - h_cam/2.0)
+                    
+                    if name not in best_detections or dist_to_center < best_detections[name]['dist']:
+                        x_cam = (u - cx_cam) * altitude / fx
+                        y_cam = (v - cy_cam) * altitude / fy
+                        
+                        dx_rot = x_cam * math.cos(theta) + y_cam * math.sin(theta)
+                        dy_rot = -x_cam * math.sin(theta) + y_cam * math.cos(theta)
+                        
+                        world_x = wp_x + dx_rot
+                        world_y = wp_y - dy_rot
+                        
+                        dx = pts[1][0] - pts[0][0]
+                        dy = pts[1][1] - pts[0][1]
+                        yaw_img = math.atan2(dy, dx)
+                        yaw_world = -yaw_img - theta
+                        
+                        best_detections[name] = {
+                            'id': int(target),
+                            'world_x': float(world_x),
+                            'world_y': float(world_y),
+                            'yaw_world': float(yaw_world),
+                            'dist': dist_to_center,
+                            'source_img': img_path.name
+                        }
+                        
+        for name, data in best_detections.items():
+            self.get_logger().info(f"ArUco {name} (id={data['id']}) detectado en {data['source_img']} a dist={data['dist']:.1f}px -> MUNDO: ({data['world_x']:.2f}, {data['world_y']:.2f})")
+            
+        return best_detections
+
+    def _publish_aruco_tfs(self, cart_meta):
         transforms = []
         for name, data in cart_meta.items():
-            mx = (data['px_x'] - cx_img) * resolution
-            my = -(data['px_y'] - cy_img) * resolution
-            yaw = -data['yaw_img']
-
             t = TransformStamped()
             t.header.stamp = self.get_clock().now().to_msg()
             t.header.frame_id = 'map'
             t.child_frame_id = f'{name}_aruco'
-            t.transform.translation.x = float(mx)
-            t.transform.translation.y = float(my)
+            t.transform.translation.x = data['world_x']
+            t.transform.translation.y = data['world_y']
             t.transform.translation.z = 0.0
+            
+            yaw = data['yaw_world']
             sy = math.sin(yaw * 0.5)
             cy_q = math.cos(yaw * 0.5)
             t.transform.rotation.x = 0.0
@@ -483,9 +537,6 @@ class MisionDron(Node):
             t.transform.rotation.z = float(sy)
             t.transform.rotation.w = float(cy_q)
             transforms.append(t)
-            self.get_logger().info(
-                f'TF map->{name}_aruco @ ({mx:+.2f},{my:+.2f}) yaw={math.degrees(yaw):+.1f}'
-            )
         self.static_tf.sendTransform(transforms)
 
 
