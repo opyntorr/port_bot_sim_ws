@@ -1,5 +1,5 @@
 free_thresh: 0.196
-image: mapa_mision.pgm
+image: occupancy_map.pgm
 mode: trinary
 negate: 0
 occupied_thresh: 0.65

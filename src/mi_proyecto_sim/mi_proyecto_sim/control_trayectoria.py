@@ -397,7 +397,7 @@ class ControlTrayectoria(Node):
 
         # ---- Llegada a la meta: detectar por distancia, no por indice ----
         # Threshold de posicion estricto. Una vez detectado, NO se vuelve a mover linealmente.
-        pos_threshold = 0.10  # 10 cm de tolerancia en posicion final
+        pos_threshold = 0.05  # 5 cm de tolerancia en posicion final
         if not self.final_rotation_mode and dist_to_final < pos_threshold:
             self.final_rotation_mode = True
             # Reset de los filtros para que el suavizado no arrastre velocidad lineal previa
