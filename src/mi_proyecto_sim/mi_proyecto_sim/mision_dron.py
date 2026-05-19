@@ -547,7 +547,13 @@ class MisionDron(Node):
                     dx = pts[1][0] - pts[0][0]
                     dy = pts[1][1] - pts[0][1]
                     yaw_img = math.atan2(dy, dx)
-                    yaw_world = -yaw_img - theta
+                    # Offset fisico entre el eje "esquina 0 -> esquina 1" del ArUco
+                    # pegado en el techo y el "forward" del carrito. Calibrar una vez:
+                    #   1. Poner el carrito mirando a +X (yaw=0) en el mundo.
+                    #   2. Detectar su ArUco desde el dron.
+                    #   3. Ese yaw_world (con signo invertido) es el offset.
+                    ARUCO_TO_CART_YAW_OFFSET = math.pi
+                    yaw_world = -yaw_img - theta + ARUCO_TO_CART_YAW_OFFSET
                     
                     best_detections[name] = {
                         'id': int(target),

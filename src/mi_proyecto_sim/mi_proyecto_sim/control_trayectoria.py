@@ -256,8 +256,9 @@ class ControlTrayectoria(Node):
             y_a_raw = trans_aruco.transform.translation.y
             q_a_raw = trans_aruco.transform.rotation
             euler_a_raw = tf_transformations.euler_from_quaternion([q_a_raw.x, q_a_raw.y, q_a_raw.z, q_a_raw.w])
+            # carrito_aruco TF ya es el heading real del carrito en map
+            # (el offset fisico ArUco-vs-forward se aplica en mision_dron.py).
             theta_a_raw = euler_a_raw[2]
-            theta_a_raw -= - math.pi / 2
             
             # Solo actualizar offset si el tiempo avanzo (nueva lectura de camara)
             if self.last_aruco_timestamp != current_aruco_timestamp:
@@ -391,34 +392,54 @@ class ControlTrayectoria(Node):
         if not target:
             return
         x_d, y_d = target
-        # Evaluar si llegamos al destino final (threshold mas estricto que waypoints intermedios)
+        # Distancia del CENTRO del robot al ultimo punto del path (no del punto desplazado x_c)
         dist_to_final = math.hypot(self.path_points[-1][0] - x, self.path_points[-1][1] - y)
-        if self.current_target_index == len(self.path_points) - 1 and dist_to_final < 0.08:
-            # Fase de alineamiento final: girar hasta la orientacion del objetivo
-            if self.goal_yaw is not None and not self.final_rotation_mode:
-                self.final_rotation_mode = True
-                self.get_logger().info(f"Posicion alcanzada. Alineando a {math.degrees(self.goal_yaw):.1f} grados...")
-            
-            if self.final_rotation_mode and self.goal_yaw is not None:
-                e_theta = self.goal_yaw - theta
-                while e_theta > math.pi: e_theta -= 2.0 * math.pi
-                while e_theta < -math.pi: e_theta += 2.0 * math.pi
-                
-                if abs(e_theta) > 0.05:  # ~3 grados de tolerancia
-                    cmd = Twist()
-                    cmd.angular.z = 1.2 * e_theta
-                    if abs(cmd.angular.z) < 0.3:
-                        cmd.angular.z = 0.3 if e_theta > 0 else -0.3
-                    cmd.angular.z = max(min(cmd.angular.z, self.w_max), -self.w_max)
-                    self.cmd_pub.publish(cmd)
-                    return
-                else:
-                    self.get_logger().info("Orientacion final alcanzada.")
-            
-            self.get_logger().info("Meta alcanzada con precision.")
-            self.stop_robot()
-            self.ruta_completada = True
-            return
+
+        # ---- Llegada a la meta: detectar por distancia, no por indice ----
+        # Threshold de posicion estricto. Una vez detectado, NO se vuelve a mover linealmente.
+        pos_threshold = 0.10  # 10 cm de tolerancia en posicion final
+        if not self.final_rotation_mode and dist_to_final < pos_threshold:
+            self.final_rotation_mode = True
+            # Reset de los filtros para que el suavizado no arrastre velocidad lineal previa
+            self.v_prev = 0.0
+            self.w_prev = 0.0
+            if self.goal_yaw is not None:
+                self.get_logger().info(
+                    f"Posicion alcanzada (dist={dist_to_final:.3f}m). "
+                    f"Alineando a {math.degrees(self.goal_yaw):.1f} grados..."
+                )
+            else:
+                self.get_logger().info(f"Posicion alcanzada (dist={dist_to_final:.3f}m). Sin orientacion objetivo, deteniendo.")
+
+        if self.final_rotation_mode:
+            # Solo rotacion: linear.x SIEMPRE 0, no volver a moverse aunque la pose derive un poco
+            cmd = Twist()
+            cmd.linear.x = 0.0
+
+            if self.goal_yaw is None:
+                # No hay orientacion objetivo: parar y terminar
+                self.cmd_pub.publish(cmd)
+                self.get_logger().info("Meta alcanzada con precision.")
+                self.ruta_completada = True
+                return
+
+            e_theta = self.goal_yaw - theta
+            while e_theta > math.pi: e_theta -= 2.0 * math.pi
+            while e_theta < -math.pi: e_theta += 2.0 * math.pi
+
+            if abs(e_theta) > 0.05:  # ~3 grados
+                w_cmd = 1.2 * e_theta
+                if abs(w_cmd) < 0.3:
+                    w_cmd = 0.3 if e_theta > 0 else -0.3
+                cmd.angular.z = max(min(w_cmd, self.w_max), -self.w_max)
+                self.cmd_pub.publish(cmd)
+                return
+            else:
+                cmd.angular.z = 0.0
+                self.cmd_pub.publish(cmd)
+                self.get_logger().info("Orientacion final alcanzada. Meta completada.")
+                self.ruta_completada = True
+                return
             
         # 3. Log de progreso cada 2 segundos con Telemetría de Velocidad
         now = self.get_clock().now()
