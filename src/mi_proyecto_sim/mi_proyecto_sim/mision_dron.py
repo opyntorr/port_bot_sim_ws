@@ -423,6 +423,26 @@ class MisionDron(Node):
             self._publish_aruco_tfs(cart_meta)
             with open(self.out_dir / 'arucos.yaml', 'w') as f:
                 yaml.dump(cart_meta, f)
+                
+            # Dibujar ArUcos visualmente en el mapa final
+            grid_path = stitch_out / 'occupancy_map_grid.png'
+            if grid_path.exists():
+                grid_img = cv2.imread(str(grid_path))
+                for name, data in cart_meta.items():
+                    # Convertir coordenadas de mundo (metros) a pixeles del mapa
+                    px_x = int((data['world_x'] - origin_x) / resolution)
+                    # En ROS el origen Y es abajo, pero en OpenCV es arriba
+                    px_y = grid_img.shape[0] - int((data['world_y'] - origin_y) / resolution)
+                    
+                    # Dibujar un punto rojo y el nombre
+                    cv2.circle(grid_img, (px_x, px_y), 15, (0, 0, 255), -1)
+                    cv2.putText(grid_img, f"{name} (id:{data['id']})", (px_x + 20, px_y + 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
+                
+                # Guardar la imagen con las marcas en un archivo separado
+                arucos_vis_path = stitch_out / 'occupancy_map_grid_arucos.png'
+                cv2.imwrite(str(arucos_vis_path), grid_img)
+                self.get_logger().info(f"ArUcos dibujados en {arucos_vis_path.name}")
 
     def _detect_aruco_positions_from_photos(self):
         camera_yaml = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'config' / ('camera_tello.yaml' if self.real else 'camera_tello_sim.yaml')
