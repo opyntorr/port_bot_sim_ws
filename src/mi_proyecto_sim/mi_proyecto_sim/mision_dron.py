@@ -568,10 +568,20 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
-    node.destroy_node()
-    rclpy.shutdown()
-
+        # Recuperación ante Ctrl+C
+        if getattr(node, 'state', None) != State.DONE:
+            fotos = list(node.fotos_dir.glob('wp_*.png')) if getattr(node, 'fotos_dir', None) else []
+            if len(fotos) > 0:
+                node.get_logger().warn(f'¡Interrupción (Ctrl+C) detectada! Tienes {len(fotos)} fotos guardadas.')
+                node.get_logger().warn('Generando el mapa final de emergencia. POR FAVOR NO PRESIONES CTRL+C OTRA VEZ...')
+                try:
+                    node._postprocess()
+                    node.get_logger().info('Mapa de emergencia generado exitosamente. Cerrando.')
+                except Exception as e:
+                    node.get_logger().error(f'Error al generar mapa de emergencia: {e}')
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 if __name__ == '__main__':
     main()
