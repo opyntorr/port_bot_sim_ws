@@ -18,11 +18,12 @@ from .io_utils import load_tiles, world_extent
 from .place_pose import (
     PlaceConfig, footprint_pixels, make_canvas_spec,
     prepare_tile, assign_canvas_centers, paste_phase_a, annotate_indices,
+    tile_layout_debug,
 )
 from .preprocess import clahe_lab, edge_image, grid_mask, estimate_tile_yaw
 from .refine_window import refine_all, RefineConfig
 from .solve_global import solve_positions, apply_positions, summarize_residuals
-from .blend_vote import blend_and_vote, label_to_ros_pgm, write_ros_map
+from .blend_vote import blend_and_vote, label_to_ros_pgm, label_to_grid_vis, write_ros_map, mask_exterior, build_final_label, crop_to_arena
 from .tape_snap import snap_to_tape_grid
 
 
@@ -62,6 +63,10 @@ def main():
                          "sub-tape-period position errors without phase-correlation aliasing.")
     ap.add_argument("--tape-period-m", type=float, default=None,
                     help="Tape grid period in metres (default: auto-estimated from images).")
+    ap.add_argument("--max-correction-frac", type=float, default=0.47,
+                    help="Max tape-snap correction as a fraction of tape period T "
+                         "(default 0.47 = T/2 - 8px safety margin). "
+                         "Old value was 0.333; increase to fix skipped tiles with large errors.")
     ap.add_argument("--snap-method", default="auto",
                     choices=["auto", "projection", "derotate", "hough"],
                     help="Tape-snap phase-detection method. "
@@ -71,6 +76,30 @@ def main():
     ap.add_argument("--search-radius-px", type=int, default=60)
     ap.add_argument("--skip-refine", action="store_true",
                     help="Use pose-prior placement only; skip Phase B/C.")
+    ap.add_argument("--seam-width", type=int, default=25,
+                    help="seam_cut blend transition width in pixels (default 25). "
+                         "Wider = smoother tape-line kinks from residual snap noise; "
+                         "narrower = harder transitions.")
+    ap.add_argument("--blend-mode", default="feather",
+                    choices=["feather", "gain", "multiband", "gain+multiband", "seam_cut", "strip_seam_cut"],
+                    help="RGB blending strategy. "
+                         "'feather': radial-Gaussian weighted average (default). "
+                         "'gain': per-tile brightness normalisation then feather. "
+                         "'multiband': 4-level Laplacian-pyramid blend. "
+                         "'gain+multiband': both gain comp and multiband. "
+                         "'seam_cut': winner-takes-all + 15px boundary blend + gain comp.")
+    ap.add_argument("--occ-min-frac", type=float, default=0.12,
+                    help="Fraction of tiles that must detect a canvas pixel as obstacle "
+                         "(default 0.12 = 12%%). Scales automatically with tile count: "
+                         "16 tiles → min 2 votes, 55 tiles → min 7 votes.")
+    ap.add_argument("--occ-close-px", type=int, default=12,
+                    help="Morphological closing radius for obstacle mask (px). "
+                         "Fills within-object detection gaps without bridging between "
+                         "separate objects. At 500px/m: 12px ≈ 2.4cm (default).")
+    ap.add_argument("--arena-size-m", type=float, default=None,
+                    help="Fixed arena canvas size in metres (e.g. 3.9 for a 3.9×3.9 m arena). "
+                         "Crops/pads the final map and mosaic to a square of this size, "
+                         "centred on the tape-grid centroid. Omit to keep the full canvas.")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--map-name", default="occupancy_map")
     args = ap.parse_args()
@@ -137,14 +166,15 @@ def main():
         n_snapped = snap_to_tape_grid(
             placed, ppm=cfg.ppm,
             tape_period_m=args.tape_period_m,
+            max_correction_frac=args.max_correction_frac,
             method=args.snap_method,
             debug=args.debug,
         )
         print(f"[stitch_pose] --tape-snap: {n_snapped}/{len(placed)} tiles snapped to tape grid")
 
     if args.debug:
-        canvas_a, _ = paste_phase_a(spec, placed)
-        cv2.imwrite(str(out / "debug_phase_a.png"), annotate_indices(canvas_a, placed))
+        layout = tile_layout_debug(tiles, placed, cfg, spec.height, spec.width)
+        cv2.imwrite(str(out / "debug_tile_layout.png"), layout)
 
     # 4) Phase B: sliding-window refinement.
     if not args.skip_refine:
@@ -179,10 +209,45 @@ def main():
             print("[stitch_pose] WARN: no accepted pairs — falling back to pose-only placement")
 
     # 6) Blending + voting.
-    print("[stitch_pose] Blending + per-mask voting...")
-    mosaic, label, seam_vis, prob_stack = blend_and_vote(
+    print(f"[stitch_pose] Blending ({args.blend_mode}) + per-mask voting...")
+    mosaic, label, seam_vis, prob_stack, occ_count, coverage_count = blend_and_vote(
         tiles, placed, cfg, spec.height, spec.width,
+        blend_mode=args.blend_mode, seam_width_px=args.seam_width,
     )
+    label, mosaic, interior_mask = mask_exterior(label, mosaic)
+    n_interior = int(interior_mask.sum())
+    n_total = interior_mask.size
+    print(f"[stitch_pose] mask_exterior: {100*n_interior/n_total:.1f}% interior, "
+          f"{100*(n_total-n_interior)/n_total:.1f}% exterior masked")
+
+    # Build final occupancy map from direct color detection on the blended mosaic.
+    # Coverage-normalized vote fraction: corners/edges get fair treatment.
+    print(f"[stitch_pose] occ_min_frac={args.occ_min_frac:.0%} (coverage-normalized per pixel)")
+    label = build_final_label(mosaic, interior_mask, label_grid_ref=label,
+                              occ_count=occ_count,
+                              coverage_count=coverage_count,
+                              occ_min_frac=args.occ_min_frac,
+                              occ_close_px=args.occ_close_px)
+    print("[stitch_pose] build_final_label: occupancy map rebuilt from mosaic colour")
+
+    # Optional: crop both mosaic and label to a fixed arena square.
+    crop_offset = (0, 0)
+    if args.arena_size_m is not None:
+        label, mosaic, crop_offset = crop_to_arena(label, mosaic, args.arena_size_m, cfg.ppm)
+        arena_px = int(round(args.arena_size_m * cfg.ppm))
+        print(f"[stitch_pose] crop_to_arena: {arena_px}×{arena_px} px "
+              f"({args.arena_size_m}m × {args.arena_size_m}m)")
+
+    if args.debug:
+        canvas_a, _ = paste_phase_a(spec, placed)
+        canvas_a[~interior_mask] = 0
+        cv2.imwrite(str(out / "debug_phase_a.png"), annotate_indices(canvas_a, placed))
+
+    label_stamp = f"blend={args.blend_mode}"
+    cv2.putText(mosaic, label_stamp, (12, 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(mosaic, label_stamp, (12, 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 0), 2, cv2.LINE_AA)
     cv2.imwrite(str(out / "mosaic_pose.png"), mosaic)
     cv2.imwrite(str(out / "mosaic_seams.png"), seam_vis)
 
@@ -192,15 +257,24 @@ def main():
     # ROS uses bottom-left origin, so we flip the image vertically and compute origin accordingly.
     pgm_flipped = cv2.flip(pgm_img, 0)
     resolution = 1.0 / cfg.ppm
-    # Canvas top-left in world coords:
-    world_x_left = extent.x_min - cfg.margin_px / cfg.ppm
-    world_y_top = extent.y_max + cfg.margin_px / cfg.ppm
+    # Canvas top-left in world coords (adjusted for crop offset if arena crop was applied):
+    world_x_left = extent.x_min - cfg.margin_px / cfg.ppm + crop_offset[0] / cfg.ppm
+    world_y_top = extent.y_max + cfg.margin_px / cfg.ppm - crop_offset[1] / cfg.ppm
     # Bottom-left after vflip:
-    world_y_bottom = world_y_top - spec.height / cfg.ppm
+    world_y_bottom = world_y_top - pgm_img.shape[0] / cfg.ppm
     write_ros_map(
         pgm_flipped, out, args.map_name, resolution,
         origin_xy=(world_x_left, world_y_bottom),
     )
+    cv2.imwrite(str(out / (args.map_name + "_vis.png")), pgm_img)
+    tape_period_px = 0.53 * cfg.ppm  # 48cm tile + 5cm tape = 53cm
+    grid_vis = label_to_grid_vis(label, tape_period_px=tape_period_px)
+    cv2.imwrite(str(out / (args.map_name + "_grid.png")), grid_vis)
+
+    # Overlay: mosaic at 50% alpha over the binary map.
+    map_bgr = cv2.cvtColor(pgm_img, cv2.COLOR_GRAY2BGR)
+    overlay = cv2.addWeighted(map_bgr, 0.5, mosaic, 0.5, 0)
+    cv2.imwrite(str(out / (args.map_name + "_overlay.png")), overlay)
     print(f"[stitch_pose] Wrote {out/(args.map_name + '.pgm')} ({pgm_img.shape[1]}x{pgm_img.shape[0]}, "
           f"res={resolution:.4f} m/px)")
 
