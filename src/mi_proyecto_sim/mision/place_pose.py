@@ -53,6 +53,8 @@ class PlacedTile:
     cy: float                         # canvas center y (pixel)
     footprint_px: int                 # square pixel footprint before rotation
     rotation_deg: float = 0.0         # rotation applied during warp (used by tape_snap)
+    x: float = 0.0                    # world center x (meters)
+    y: float = 0.0                    # world center y (meters)
 
 
 def make_canvas_spec(extent: WorldExtent, cfg: PlaceConfig, footprint_px_max: int) -> CanvasSpec:
@@ -122,6 +124,8 @@ def prepare_tile(tile: Tile, cfg: PlaceConfig, preproc_bgr: np.ndarray = None) -
         cx=0.0, cy=0.0,
         footprint_px=fp,
         rotation_deg=angle,
+        x=tile.x,
+        y=tile.y,
     )
 
 
@@ -160,7 +164,10 @@ def annotate_indices(canvas: np.ndarray, placed: List[PlacedTile]) -> np.ndarray
     out = canvas.copy()
     for p in placed:
         txt = f"wp_{p.idx:02d}"
-        org = (int(p.cx) - 30, int(p.cy))
-        cv2.putText(out, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+        txt_pos = f"({p.x:.2f}, {p.y:.2f})"
+        org_idx = (int(p.cx) - 30, int(p.cy) - 10)
+        org_pos = (int(p.cx) - 40, int(p.cy) + 15)
+        cv2.putText(out, txt, org_idx, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(out, txt_pos, org_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
         cv2.circle(out, (int(p.cx), int(p.cy)), 4, (0, 0, 255), -1)
     return out

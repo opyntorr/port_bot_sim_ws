@@ -1,0 +1,149 @@
+<?xml version="1.0"?>
+<sdf version="1.8">
+  <world name="laberinto_world">
+
+    <plugin filename="libignition-gazebo-physics-system.so"
+      name="ignition::gazebo::systems::Physics"></plugin>
+    <plugin filename="libignition-gazebo-scene-broadcaster-system.so"
+      name="ignition::gazebo::systems::SceneBroadcaster"></plugin>
+    <plugin filename="libignition-gazebo-user-commands-system.so"
+      name="ignition::gazebo::systems::UserCommands"></plugin>
+    <plugin filename="libignition-gazebo-sensors-system.so"
+      name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <scene>
+      <ambient>0.55 0.55 0.6 1.0</ambient>
+      <background>0.85 0.87 0.9 1.0</background>
+      <grid>true</grid>
+    </scene>
+
+    <gui fullscreen="0">
+      <plugin filename="GzScene3D" name="3D View">
+        <ignition-gui>
+          <title>3D View</title>
+          <property type="bool" key="showTitleBar">false</property>
+          <property type="string" key="state">docked</property>
+        </ignition-gui>
+        <engine>ogre2</engine>
+        <scene>scene</scene>
+        <ambient_light>0.55 0.55 0.6</ambient_light>
+        <background_color>0.85 0.87 0.9</background_color>
+        <camera_pose>-6 0 5 0 0.5 0</camera_pose>
+        <horizontal_fov>0.6912</horizontal_fov>
+      </plugin>
+    </gui>
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.45 0.45 0.45 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <light type="directional" name="fill_opposite">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.25 0.25 0.28 1</diffuse>
+      <specular>0.0 0.0 0.0 1</specular>
+      <direction>0.5 -0.1 -0.7</direction>
+    </light>
+
+    <light type="directional" name="fill_side">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.2 0.22 0.25 1</diffuse>
+      <specular>0.0 0.0 0.0 1</specular>
+      <direction>0.1 0.9 -0.4</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- dronCamara desactivado: colisionaba con uav/camera/image del tello_con_espejo -->
+    <!-- <include>
+      <uri>file://dronCamara.sdf</uri>
+      <pose>0 0 5.5 0 0 0</pose>
+    </include> -->
+
+    <include>
+      <name>aruco_0</name>
+      <uri>file://marcador_aruco/marcador_aruco0.sdf</uri>
+      <pose>1.2 1.2 0.06 0 0 -1.5708</pose>
+    </include>
+
+    <!--
+    <include>
+      <name>aruco_1</name>
+      <uri>file://marcador_aruco/marcador_aruco1.sdf</uri>
+      <pose>2.2 -2.2 0.01 0 0 -1.5708</pose>
+    </include>
+
+    <include>
+      <name>aruco_2</name>
+      <uri>file://marcador_aruco/marcador_aruco2.sdf</uri>
+      <pose>-2.2 -2.2 0.01 0 0 -1.5708</pose>
+    </include>
+
+    <include>
+      <name>aruco_3</name>
+      <uri>file://marcador_aruco/marcador_aruco3.sdf</uri>
+      <pose>-2.2 2.2 0.01 0 0 -1.5708</pose>
+    </include>
+
+    <include>
+      <name>aruco_5</name>
+      <uri>file://marcador_aruco/marcador_aruco5.sdf</uri>
+      <pose>1.4 -1.2 0.06 0 0 -1.5708</pose>
+    </include>
+    -->
+
+    <include>
+      <uri>model://skydome</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <include>
+      <uri>model://laberinto_real</uri>
+      <pose>-2.294 2.294 0 1.5708 0 0</pose>
+    </include>
+
+    <!--
+    <include>
+      <uri>model://netanyaju</uri>
+      <pose>1.2 -0.8 0.05 3.14159 0 0</pose>
+    </include>
+    -->
+
+  </world>
+</sdf>

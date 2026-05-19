@@ -1,30 +1,24 @@
 """
-Misión autónoma del dron Tello REAL:
+Mision autonoma del dron Tello REAL con OptiTrack como unica fuente de pose
+y orientacion (con fallback de odometria):
   - Driver Tello (WiFi 192.168.10.1)
-  - pose_fuser (fusión OptiTrack + odometría)
-  - PID de posición
-  - mision_dron (modo real)
+  - pose_fuser_optitrack (posicion + orientacion del optitrack; fallback /drone1/odom)
+  - position_controller con control de yaw habilitado (yaw_ref = primer dato)
+  - plotter
+  - mision_dron en modo real + stitching por pose
 
 Prerrequisitos:
   - PC conectada al WiFi del Tello
-  - OptiTrack publicando en /optitrack/rigid_body
+  - OptiTrack publicando en /optitrack/rigid_body (pose + orientacion)
 
 Uso:
-  ros2 launch mi_proyecto_sim mision_dron_real.launch.py
-  ros2 launch mi_proyecto_sim mision_dron_real.launch.py tello_ip:=192.168.10.1
+  ros2 launch mi_proyecto_sim mision_dron_real_opti.launch.py
 """
-import os
-from pathlib import Path
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, TimerAction
 from launch.event_handlers import OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-
-_TELLO_SHARE = Path(get_package_share_directory('tello'))
-_OST_YAML = str(_TELLO_SHARE / 'ost.yaml')
 
 
 def generate_launch_description():
@@ -41,7 +35,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             {'tello_ip': tello_ip},
-            {'camera_info_file': _OST_YAML}
+            {'camera_info_file': '/ros2_ws/src/demo_tello_sim/src/tello-ros2-main/workspace/src/tello/resource/ost.yaml'},
         ],
         remappings=[
             ('image_raw', '/image_raw'),
@@ -49,13 +43,13 @@ def generate_launch_description():
             ('control', '/control'),
             ('takeoff', '/takeoff'),
             ('land', '/land'),
-        ]
+        ],
     )
 
     pose_fuser = Node(
         package='tello_control_pos',
-        executable='pose_fuser',
-        name='pose_fuser',
+        executable='pose_fuser_optitrack',
+        name='pose_fuser_optitrack',
         output='screen',
         remappings=[
             ('/drone1/odom', '/odom'),
@@ -79,6 +73,10 @@ def generate_launch_description():
             {'kp': 0.5},
             {'ki': 0.06},
             {'kd': 0.35},
+            {'enable_yaw_control': True},
+            {'kp_yaw': 1.5},
+            {'kd_yaw': 0.15},
+            {'max_yaw_rate': 0.8},
         ],
     )
 
@@ -88,7 +86,6 @@ def generate_launch_description():
         name='plotter',
         output='screen',
         parameters=[{'use_sim_time': False}],
-        additional_env={'DISPLAY': os.environ.get('DISPLAY', ':0')},
     )
 
     land_on_shutdown = RegisterEventHandler(
@@ -102,7 +99,6 @@ def generate_launch_description():
         )
     )
 
-    # La misión arranca 5s después del driver para que el Tello termine de conectarse
     mision = TimerAction(
         period=5.0,
         actions=[Node(
@@ -113,6 +109,8 @@ def generate_launch_description():
             parameters=[
                 {'use_sim_time': False},
                 {'use_real_drone': True},
+                {'stitcher': 'pose'},
+                {'stitch_resolution': 0.005},
                 # Real: el Tello ya produce colores "invertidos" de fábrica, no añadir swap
                 {'invert_colors': False},
             ],

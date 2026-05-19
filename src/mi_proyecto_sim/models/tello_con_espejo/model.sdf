@@ -6,8 +6,8 @@
       <name>tello_base</name>
     </include>
 
-    <!-- Enlace para el Espejo a 45 grados y la Camara Virtual -->
-    <link name="espejo_link">
+    <!-- Enlace para la Camara Virtual nadir (distinto de espejo_link del modelo base) -->
+    <link name="espejo_uav_link">
       <!-- El link en sí está en el centro exacto para no desequilibrar el dron -->
       <pose>0 0 0 0 0 0</pose>
       <inertial>
@@ -42,7 +42,7 @@
         <pose>0.1 0 -0.05 0 1.570796 0</pose>
         <always_on>1</always_on>
         <update_rate>30</update_rate>
-        <visualize>true</visualize>
+        <visualize>false</visualize>
         <!-- Publica en el topico original que espera el detector ArUco -->
         <topic>/uav/camera/image</topic>
         <camera>
@@ -60,10 +60,10 @@
       </sensor>
     </link>
 
-    <!-- Union Fija entre el Dron y el Espejo -->
-    <joint name="espejo_joint" type="fixed">
+    <!-- Union Fija entre el Dron y la Camara UAV -->
+    <joint name="espejo_uav_joint" type="fixed">
       <parent>tello_base::base_link</parent>
-      <child>espejo_link</child>
+      <child>espejo_uav_link</child>
     </joint>
   </model>
 </sdf>

@@ -37,6 +37,13 @@ def generate_launch_description():
         value=f"/opt/ros/humble/lib:{tello_lib_dir}"
     )
 
+    # FOV del viewport (~50mm en full-frame ≈ 0.691 rad). No todas las
+    # versiones de Ignition Fortress respetan esta var; si no funciona, no rompe nada.
+    gui_fov_env = SetEnvironmentVariable(
+        name='IGN_GAZEBO_GUI_CAMERA_FOV',
+        value='0.691'
+    )
+
     # 2. Lanzar Gazebo sin pausa
     gazebo = ExecuteProcess(
         cmd=['ign', 'gazebo', '-r', world_file],
@@ -107,11 +114,11 @@ def generate_launch_description():
             
             # --- POSICIÓN ---
             '-x', '-1.0',  # Coordenada X en metros
-            '-y', '1.0',  # Coordenada Y en metros
+            '-y', '-1.0',  # Coordenada Y en metros
             '-z', '0.1',  # Altura inicial
             
             # --- ORIENTACIÓN (Añadir esto) ---
-            '-Y', '-1.5708' # Orientación (Yaw) en radianes. 
+            '-Y', '1.5708' # Orientación (Yaw) en radianes. 
         ],
         output='screen'
     )
@@ -125,7 +132,7 @@ def generate_launch_description():
             '-file', tello_espejo_sdf,
             '-x', '0.0',
             '-y', '0.0',
-            '-z', '1.0'
+            '-z', '0.1'
         ],
         output='screen'
     )
@@ -176,6 +183,7 @@ def generate_launch_description():
             'tamano_pixel_mapa': 440,
             'ancho_laberinto_m': 2.65,
             'alto_laberinto_m': 3.10,
+            'invert_colors': True,  # sim: emula la inversión nativa del Tello real
         }]
     )
 
@@ -310,6 +318,7 @@ def generate_launch_description():
     return LaunchDescription([
         set_env,
         plugin_env,
+        gui_fov_env,
         gazebo,
         puente,
         visor_dron,

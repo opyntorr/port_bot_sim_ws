@@ -39,8 +39,10 @@ class ArucoSlamTf(Node):
         self.declare_parameter('tamano_pixel_mapa', 440)
         self.declare_parameter('ancho_laberinto_m', 2.80)
         self.declare_parameter('alto_laberinto_m', 3.40)
-        
+        self.declare_parameter('invert_colors', False)
+
         self.aruco_size_m = self.get_parameter('aruco_size_m').value
+        self.invert_colors = self.get_parameter('invert_colors').value
         self.tamano_pixel_mapa = self.get_parameter('tamano_pixel_mapa').value
         self.ancho_m = self.get_parameter('ancho_laberinto_m').value
         self.alto_m = self.get_parameter('alto_laberinto_m').value
@@ -61,7 +63,13 @@ class ArucoSlamTf(Node):
         return [qx, qy, qz, qw]
 
     def image_callback(self, msg):
-        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        if self.invert_colors:
+            # passthrough preserva el orden de bytes del source (rgb8 → RGB);
+            # al republicar como bgr8, los visores interpretan los bytes como BGR
+            # → R↔B invertido en pantalla. Replica el Tello real en simulación.
+            cv_image = self.bridge.imgmsg_to_cv2(msg, "passthrough")
+        else:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         
         if self.detector is not None:
             corners, ids, rejected = self.detector.detectMarkers(cv_image)

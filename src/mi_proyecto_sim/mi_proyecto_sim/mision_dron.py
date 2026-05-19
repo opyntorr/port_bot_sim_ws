@@ -32,13 +32,13 @@ try:
 except ImportError:
     _HAS_TELLO_ACTION = False
 
-def make_range_points(n, min_value=-1.1, max_value=1.1):
+def make_range_points(n, min_value=-1.4, max_value=1.4):
     step = (max_value - min_value) / (n - 1)
     return [min_value + i * step for i in range(n)]
 
 # Patron serpiente en grid 3x3 (todos a z=2.5m). Spacing 1.3m para ~60% overlap.
 # Cobertura: -1.3m a 1.3m en X e Y.
-_Z = 2.5
+_Z = 2.2
 WAYPOINTS = []
 GRID_SIZE = 4
 _COLS = make_range_points(GRID_SIZE)
@@ -67,7 +67,7 @@ def _find_ws_root() -> Path:
 
 WS_ROOT = _find_ws_root()
 STITCH_SCRIPT = WS_ROOT / 'src' / 'demo_tello_sim' / 'camera_calibration' / 'stitch_images.py'
-STITCH_POSICION_SCRIPT = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'mi_proyecto_sim' / 'stitch_posicion.py'
+STITCH_POSICION_PKG_DIR = WS_ROOT / 'src' / 'mi_proyecto_sim'  # cwd para `python3 -m mision.stitch_pose`
 MAPS_DIR = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'maps'
 
 
@@ -79,8 +79,10 @@ class MisionDron(Node):
         self.declare_parameter('camera_topic', '')
         self.declare_parameter('odom_topic', '')
         self.declare_parameter('optitrack_topic', '/optitrack/rigid_body')
+        self.declare_parameter('invert_colors', False)
 
         self.real = self.get_parameter('use_real_drone').get_parameter_value().bool_value
+        self.invert_colors = self.get_parameter('invert_colors').get_parameter_value().bool_value
 
         # Tópicos: parámetro explícito > default según modo
         cam_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
@@ -129,6 +131,7 @@ class MisionDron(Node):
         self.takeoff_t = None
         self.land_t = None
         self.land_called = False
+        self.last_saved_stamp = None  # evita guardar el mismo frame en WPs consecutivos
 
         self.timer = self.create_timer(0.1, self._tick)
         modo = 'REAL' if self.real else 'SIM'
@@ -222,7 +225,10 @@ class MisionDron(Node):
                         f'Esperando {SETTLE_TIME}s de estabilidad...'
                     )
                 elif (now - self.settle_start) > SETTLE_TIME:
-                    self._save_photo(self.wp_index)
+                    saved = self._save_photo(self.wp_index)
+                    if saved is False:
+                        # Frame aún no fresco; intenta de nuevo en el siguiente tick
+                        return
                     self.settle_start = None
                     self.wp_index += 1
                     if self.wp_index >= len(WAYPOINTS):
@@ -267,12 +273,27 @@ class MisionDron(Node):
             self.get_logger().warn(f'[WP{idx}] Sin imagen disponible — foto no guardada')
             return
 
+        # Verifica que el frame sea NUEVO respecto a la última foto guardada;
+        # si la cámara va lenta y no hay frame fresco, no avances todavía.
+        stamp = self.latest_image.header.stamp
+        stamp_key = (stamp.sec, stamp.nanosec)
+        if self.last_saved_stamp is not None and stamp_key == self.last_saved_stamp:
+            self.get_logger().warn(
+                f'[WP{idx}] Frame de cámara aún no actualizado (mismo stamp que WP previo) — espero'
+            )
+            return False
+        self.last_saved_stamp = stamp_key
+
         # Decodificar imagen (evita cv_bridge para compatibilidad con NumPy 2.x)
         try:
             m = self.latest_image
             img = np.frombuffer(m.data, dtype=np.uint8).reshape(m.height, m.width, -1)
             if m.encoding in ('rgb8', 'RGB8'):
-                img = img[:, :, ::-1].copy()
+                if not self.invert_colors:
+                    # convención normal: RGB→BGR para que cv2.imwrite guarde bien
+                    img = img[:, :, ::-1].copy()
+                # else: dejar bytes en RGB; cv2.imwrite los interpreta como BGR
+                # y el PNG queda con R↔B invertido (replica el Tello real).
             elif m.encoding in ('mono8', 'MONO8'):
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         except Exception as exc:
@@ -326,20 +347,21 @@ class MisionDron(Node):
         stitch_out = self.out_dir / 'stitching'
         stitch_out.mkdir(exist_ok=True)
         cmd = [
-            'python3', str(STITCH_POSICION_SCRIPT),
+            'python3', '-m', 'mision.stitch_pose',
             '--input', str(self.fotos_dir),
             '--output', str(stitch_out),
-            '--no-undistort',
-            '--max-dist', '1.6',
-            '--positional-only',   # tile grid is repetitive; SIFT causes ghost matches
+            '--map-name', 'occupancy_map',
         ]
-        self.get_logger().info(f'Stitching: {" ".join(cmd)}')
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        self.get_logger().info(f'Stitching: {" ".join(cmd)} (cwd={STITCH_POSICION_PKG_DIR})')
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            cwd=str(STITCH_POSICION_PKG_DIR),
+        )
         if result.returncode != 0:
             self.get_logger().error(f'Stitching fallo:\n{result.stderr}')
             return
 
-        panorama_path = stitch_out / 'panorama.png'
+        panorama_path = stitch_out / 'mosaic_pose.png'
         if not panorama_path.exists():
             self.get_logger().error(f'No se encontro {panorama_path}')
             return
@@ -374,12 +396,12 @@ class MisionDron(Node):
         cv2.imwrite(str(pgm_path), binary)
 
         h, w = binary.shape
-        scale_path = stitch_out / 'scale.json'
-        if scale_path.exists():
-            sd = json.loads(scale_path.read_text())
-            resolution = 1.0 / sd['pixels_per_meter']
-            origin_x   = sd['origin_x_m']
-            origin_y   = sd['origin_y_m']
+        stitch_yaml = stitch_out / 'occupancy_map.yaml'
+        if stitch_yaml.exists():
+            sd = yaml.safe_load(stitch_yaml.read_text())
+            resolution = float(sd['resolution'])
+            origin_x   = float(sd['origin'][0])
+            origin_y   = float(sd['origin'][1])
         else:
             resolution = MAP_SIZE_M / max(w, h)
             origin_x   = -MAP_SIZE_M / 2.0
