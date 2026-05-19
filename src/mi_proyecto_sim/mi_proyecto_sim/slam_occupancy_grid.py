@@ -79,7 +79,7 @@ class SlamOccupancyGrid(Node):
                         origin = map_data.get('origin', [self.pgm_ox, self.pgm_oy, 0.0])
                         self.pgm_ox = origin[0]
                         self.pgm_oy = origin[1]
-                        self.get_logger().info(f"📍 YAML Cargado! Origen PGM ajustado a Y={self.pgm_oy}")
+                        self.get_logger().info(f"YAML Cargado! Origen PGM ajustado a Y={self.pgm_oy}")
                 except Exception as e:
                     self.get_logger().error(f"Error cargando YAML: {e}")
             self._load_pgm_prior(pgm_path)

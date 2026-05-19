@@ -37,7 +37,7 @@ class PlanificadorRuta(Node):
         
         self.resolucion = 0.01 # 1px = 1cm
         self.timer = self.create_timer(1.0, self.calcular_y_publicar_ruta)
-        self.get_logger().info("🚀 Planificador A* iniciado y esperando TFs...")
+        self.get_logger().info("Planificador A* iniciado y esperando TFs...")
 
     def metro_a_pixel(self, x, y):
         px = int(x / self.resolucion)

@@ -47,7 +47,7 @@ class ArucoSlamTf(Node):
         self.ancho_m = self.get_parameter('ancho_laberinto_m').value
         self.alto_m = self.get_parameter('alto_laberinto_m').value
         
-        self.get_logger().info(f"📸 Iniciando detector ArUco (tamaño={self.aruco_size_m}m, mapa={self.tamano_pixel_mapa}px). Esperando marcadores (0-5)...")
+        self.get_logger().info(f"Iniciando detector ArUco (tamaño={self.aruco_size_m}m, mapa={self.tamano_pixel_mapa}px). Esperando marcadores (0-5)...")
 
 
 
@@ -198,8 +198,8 @@ class ArucoSlamTf(Node):
 
 
                 self.snapshot_tomado = True
-                self.get_logger().info("✅ ¡Snapshot Exitoso! TFs de Meta y Posición Inicial fijadas.")
-                self.get_logger().info("🛑 Snapshot completado. Se seguirá publicando video, pero sin recalcular TFs.")
+                self.get_logger().info("¡Snapshot Exitoso! TFs de Meta y Posicion Inicial fijadas.")
+                self.get_logger().info("Snapshot completado. Se seguira publicando video, pero sin recalcular TFs.")
 
             elif not self.snapshot_tomado:
                 # Log de diagnóstico: Qué falta para el snapshot

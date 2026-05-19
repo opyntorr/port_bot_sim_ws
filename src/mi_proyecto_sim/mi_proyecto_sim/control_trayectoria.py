@@ -236,7 +236,7 @@ class ControlTrayectoria(Node):
                  self.get_logger().warn(f"LIDAR: ¡OBSTÁCULO! Dist: {self.min_dist_frontal:.2f}m | Fuerza Rep: [{self.repulsion_x:.2f}, {self.repulsion_y:.2f}]")
             
             if num_invalidos > len(msg.ranges) * 0.9:
-                self.get_logger().error("⚠️ CRÍTICO: El LIDAR está recibiendo casi todos los datos inválidos (inf/nan).")
+                self.get_logger().error("CRITICO: El LIDAR esta recibiendo casi todos los datos invalidos (inf/nan).")
 
     def get_current_pose(self):
         # 1. Obtener la odometria del callback directo
@@ -308,7 +308,7 @@ class ControlTrayectoria(Node):
                 # Caso B: No hay ArUco todavía. ¿Forzamos inicio por Odometría pura?
                 elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
                 if elapsed > 4.0:
-                    self.get_logger().warn("⚠️ No se detecta ArUco (Tablero incompleto). Iniciando por Odometría.")
+                    self.get_logger().warn("No se detecta ArUco (Tablero incompleto). Iniciando por Odometria.")
                     # Usamos la odometría actual como pose absoluta para no saltar
                     self.odom_offset_x = 0.0
                     self.odom_offset_y = 0.0

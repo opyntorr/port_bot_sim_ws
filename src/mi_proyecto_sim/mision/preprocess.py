@@ -152,7 +152,7 @@ def estimate_tile_yaw(bgr: np.ndarray, min_tape_frac: float = 0.03) -> "float | 
         return None
 
     # deviation = median(theta) − pi/2 = − α_img (CW tilt of tape in image coords).
-    # With yaw_sign=-1: rotation = −deviation_deg (CCW) corrects the tilt. ✓
+    # With yaw_sign=-1: rotation = −deviation_deg (CCW) corrects the tilt.
     alpha_deg = float(np.degrees(float(np.median(horiz)) - np.pi / 2))
     while alpha_deg > 45.0:
         alpha_deg -= 90.0
