@@ -7,14 +7,14 @@
 # lo que hace que imagen-derecha = mundo+Y e imagen-abajo = mundo+X.
 # Para alinear con el canvas (derecha=+X, abajo=-Y) se necesita rotar -90deg.
 camera_rotation_deg: -90.0
-image_width: 1280
+image_width: 960
 image_height: 720
 camera_name: tello_espejo_sim
 camera_matrix:
   rows: 3
   cols: 3
-  data: [728.528, 0.000000, 640.0,
-         0.000000, 728.528, 360.0,
+  data: [546.396, 0.000000, 480.0,
+         0.000000, 546.396, 360.0,
          0.000000, 0.000000, 1.000000]
 distortion_model: plumb_bob
 distortion_coefficients:
@@ -30,6 +30,6 @@ rectification_matrix:
 projection_matrix:
   rows: 3
   cols: 4
-  data: [728.528, 0.0, 640.0, 0.0,
-         0.0, 728.528, 360.0, 0.0,
+  data: [546.396, 0.0, 480.0, 0.0,
+         0.0, 546.396, 360.0, 0.0,
          0.0, 0.0, 1.0, 0.0]
