@@ -371,6 +371,45 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
+    # =========================================================
+    # PUENTES PARA LA CONSOLA WEB (Seaport Console)
+    # =========================================================
+
+    # rosbridge_server: pub/sub de topics y servicios desde el navegador (port 9090).
+    # Permite a la consola leer /odom, /cmd_vel, ArUco TFs, etc.
+    rosbridge_server = Node(
+        package='rosbridge_server',
+        executable='rosbridge_websocket',
+        name='rosbridge_websocket',
+        parameters=[{'use_sim_time': True, 'port': 9090}],
+        output='screen',
+    )
+
+    # foxglove_bridge: alimenta el panel "Visualization" de la consola (port 8765).
+    # Mucho mas eficiente que rosbridge para point clouds, mapas, TFs y paths.
+    foxglove_bridge_node = Node(
+        package='foxglove_bridge',
+        executable='foxglove_bridge',
+        name='foxglove_bridge',
+        parameters=[{
+            'use_sim_time': True,
+            'port': 8765,
+            'address': '0.0.0.0',
+            'send_buffer_limit': 10_000_000,
+        }],
+        output='screen',
+    )
+
+    # web_video_server: sirve los topics de imagen como MJPEG por HTTP (port 8080).
+    # El panel de camara de la consola lo usa en vez de codificar frames base64.
+    web_video_server_node = Node(
+        package='web_video_server',
+        executable='web_video_server',
+        name='web_video_server',
+        parameters=[{'port': 8080}],
+        output='screen',
+    )
+
     # Event handler: cuando mision_dron termina, lanzar SLAM + TF publisher + RRT
     rrt_y_slam_handler = RegisterEventHandler(
         event_handler=OnProcessExit(
@@ -407,5 +446,8 @@ def generate_launch_description():
         plotter,
         mision,
         rrt_y_slam_handler,
+        rosbridge_server,
+        foxglove_bridge_node,
+        web_video_server_node,
     ])
 
