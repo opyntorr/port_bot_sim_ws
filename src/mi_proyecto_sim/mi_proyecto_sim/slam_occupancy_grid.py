@@ -46,6 +46,9 @@ class SlamOccupancyGrid(Node):
         # Rotaci  n manual map   odom (radianes). ArUco no detecta yaw bien desde arriba.
         # Probar 1.5708 (90  ), -1.5708 (-90  ), 3.1416 (180  ) seg  n orientaci  n Gazebo.
         self.declare_parameter('map_to_odom_yaw', 1.5708)
+        # Si False, no publica la TF estatica map->odom (util cuando un nodo
+        # externo como AMCL se encarga de la localizacion).
+        self.declare_parameter('publish_map_to_odom_tf', True)
 
         self.resolution = self.get_parameter('map_resolution').value
         self.width = self.get_parameter('map_width').value
@@ -63,6 +66,7 @@ class SlamOccupancyGrid(Node):
         self.pgm_ox = self.get_parameter('pgm_origin_x').value
         self.pgm_oy = self.get_parameter('pgm_origin_y').value
         self.manual_yaw = self.get_parameter('map_to_odom_yaw').value
+        self.publish_tf = self.get_parameter('publish_map_to_odom_tf').value
 
         #        Grid de log-odds (inicialmente unknown = 0.0)                         
         self.log_odds = np.zeros((self.height, self.width), dtype=np.float64)
@@ -271,17 +275,19 @@ class SlamOccupancyGrid(Node):
                     f'    Offset map   odom CALIBRADO: dx={self.offset_x:.3f}, '
                     f'dy={self.offset_y:.3f}, dyaw={math.degrees(self.offset_yaw):.1f}  ')
 
-                # Publicar TF est  tica map   odom correcta
-                t = TransformStamped()
-                t.header.stamp = self.get_clock().now().to_msg()
-                t.header.frame_id = 'map'
-                t.child_frame_id = 'odom'
-                t.transform.translation.x = self.offset_x
-                t.transform.translation.y = self.offset_y
-                t.transform.translation.z = 0.0
-                t.transform.rotation.z = math.sin(self.offset_yaw / 2.0)
-                t.transform.rotation.w = math.cos(self.offset_yaw / 2.0)
-                self.tf_broadcaster.sendTransform(t)
+                # Publicar TF est  tica map   odom (omitir si un nodo externo
+                # como AMCL se encarga de la localizacion)
+                if self.publish_tf:
+                    t = TransformStamped()
+                    t.header.stamp = self.get_clock().now().to_msg()
+                    t.header.frame_id = 'map'
+                    t.child_frame_id = 'odom'
+                    t.transform.translation.x = self.offset_x
+                    t.transform.translation.y = self.offset_y
+                    t.transform.translation.z = 0.0
+                    t.transform.rotation.z = math.sin(self.offset_yaw / 2.0)
+                    t.transform.rotation.w = math.cos(self.offset_yaw / 2.0)
+                    self.tf_broadcaster.sendTransform(t)
 
             except Exception:
                 pass  # ArUco a  n no disponible, se reintenta en el pr  ximo odom
@@ -299,20 +305,28 @@ class SlamOccupancyGrid(Node):
     def _scan_cb(self, msg):
         self.scan_count += 1
 
-        # Ignorar LiDAR si no est   activado a  n
+        # Ignorar LiDAR si no est activado aun
         if not self.lidar_enabled:
             return
 
-        # Usar pose de odometr  a directa
-        if self.robot_x is None:
+        # Pose del robot en frame map: leida de TF (publicada por AMCL).
+        # Asi los rayos se trazan usando la pose CORREGIDA, no la odom cruda.
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                'map', 'base_footprint', rclpy.time.Time())
+        except Exception as e:
             self.tf_fail_count += 1
-            self.last_tf_error = 'Esperando datos de /odom...'
+            self.last_tf_error = f'TF map->base_footprint no disponible: {e}'
             return
 
         self.tf_ok_count += 1
-        rx = self.robot_x
-        ry = self.robot_y
-        yaw = self.robot_yaw
+        rx = tf.transform.translation.x
+        ry = tf.transform.translation.y
+        q = tf.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
 
         robot_col, robot_row = self._world_to_grid(rx, ry)
         updated = 0

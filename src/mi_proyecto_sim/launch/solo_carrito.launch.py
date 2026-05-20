@@ -148,16 +148,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    # TF estatica por defecto map -> odom (identidad). slam_occupancy_grid
-    # la sobreescribira con la calibracion ArUco al primer odom.
-    static_map_to_odom = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='static_map_to_odom',
-        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-        output='screen',
-    )
-
     filtro_lidar_node = Node(
         package='mi_proyecto_sim',
         executable='filtro_lidar.py',
@@ -200,6 +190,31 @@ def generate_launch_description():
             'map_origin_x': -4.0,
             'map_origin_y': -4.5,
             'map_to_odom_yaw': 0.0,
+            # AMCL se encarga de publicar map->odom; este nodo solo da el mapa.
+            'publish_map_to_odom_tf': False,
+        }],
+    )
+
+    # AMCL casero: localizacion por filtro de particulas usando /map + /scan_filtered.
+    # Publica TF map->odom corrigiendo continuamente la deriva de la odom de ruedas.
+    amcl_node = Node(
+        package='mi_proyecto_sim',
+        executable='amcl_localizer.py',
+        name='amcl_localizer',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'num_particles': 500,
+            'laser_max_range': 5.0,
+            'sigma_hit': 0.2,
+            'z_hit': 0.95,
+            'z_rand': 0.05,
+            'laser_subsample': 10,
+            'update_min_d': 0.10,
+            'update_min_a': 0.10,
+            'init_from_aruco': True,
+            'init_std_xy': 0.3,
+            'init_std_yaw': 0.3,
         }],
     )
 
@@ -258,10 +273,10 @@ def generate_launch_description():
         rviz_node,
         joy_node,
         teleop,
-        static_map_to_odom,
         filtro_lidar_node,
         publicador_tfs_node,
         slam_occupancy_grid_node,
+        amcl_node,
         planificador_rrt_node,
         rosbridge_server,
         foxglove_bridge_node,

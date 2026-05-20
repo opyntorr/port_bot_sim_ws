@@ -12,12 +12,23 @@ def generate_launch_description():
     pkg_sim = get_package_share_directory('mi_proyecto_sim')
     # Derivar la raíz del workspace: install/mi_proyecto_sim/share/mi_proyecto_sim -> 4 niveles arriba
     ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
-    mapa_pgm = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_mision.pgm')
-    # mapa_yaml = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps', 'mapa_laberinto.yaml')
+    maps_dir = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps')
+    mapa_pgm = os.path.join(maps_dir, 'mapa_mision.pgm')
+    mapa_yaml = os.path.join(maps_dir, 'mapa_mision.yaml')
+    arucos_yaml = os.path.join(maps_dir, 'arucos.yaml')
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
     xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco.urdf.xacro')
     rviz_config = os.path.join(pkg_sim, 'rviz', 'configuracion.rviz')
+
+    # Limpiar artefactos de la corrida anterior antes de lanzar.
+    # Asi, si la mision del dron crashea, slam_occupancy_grid no carga el PGM
+    # viejo y RViz queda en blanco (solo_carrito.launch.py NO hace esto:
+    # ahi si queremos reutilizar los artefactos).
+    limpiar_artefactos = ExecuteProcess(
+        cmd=['rm', '-f', mapa_pgm, mapa_yaml, arucos_yaml],
+        output='screen',
+    )
 
 
     tello_models_dir = os.path.join(ws_root, 'src', 'demo_tello_sim', 'src', 'tello-ros2-gazebo-master', 'tello_ros', 'tello_gazebo', 'models')
@@ -424,6 +435,7 @@ def generate_launch_description():
 
     # Empaquetar y lanzar todo simultaneamente
     return LaunchDescription([
+        limpiar_artefactos,
         set_env,
         plugin_env,
         gui_fov_env,

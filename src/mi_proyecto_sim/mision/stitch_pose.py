@@ -252,6 +252,13 @@ def main():
     ap.add_argument("--skip-refine", action="store_true")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--map-name", default="occupancy_map")
+    # Bounding box del laberinto en coordenadas world (m). Los pixeles fuera de
+    # esta caja se marcan como "desconocido" en la PGM, evitando que el ghosting
+    # de las fotos de bordes contamine la occupancy del SLAM downstream.
+    ap.add_argument('--maze-x-min', type=float, default=-1.6)
+    ap.add_argument('--maze-x-max', type=float, default=1.6)
+    ap.add_argument('--maze-y-min', type=float, default=-1.8)
+    ap.add_argument('--maze-y-max', type=float, default=1.8)
     
     args = ap.parse_args()
 
@@ -390,6 +397,27 @@ def main():
     obstacles = cv2.morphologyEx(obstacles, cv2.MORPH_CLOSE, k3, iterations=2)
     
     occ[covered & (obstacles > 0)] = 0
+
+    # Recortar a la bounding box del laberinto: todo fuera = desconocido (205).
+    # Esto elimina el "ghosting" de las fotos cuyos bordes capturan area fuera
+    # de las paredes del laberinto.
+    H_occ, W_occ = occ.shape
+    cols_grid, rows_grid = np.meshgrid(
+        np.arange(W_occ, dtype=np.float32),
+        np.arange(H_occ, dtype=np.float32),
+    )
+    world_x_grid = x_min + cols_grid * args.resolution
+    # rows van top->down en imagen, world_y va abajo->arriba
+    world_y_grid = y_max - rows_grid * args.resolution
+    inside_maze = (
+        (world_x_grid >= args.maze_x_min) & (world_x_grid <= args.maze_x_max)
+        & (world_y_grid >= args.maze_y_min) & (world_y_grid <= args.maze_y_max)
+    )
+    occ[~inside_maze] = 205
+    print(f'[stitcher] Recorte aplicado: maze x=[{args.maze_x_min},{args.maze_x_max}], '
+          f'y=[{args.maze_y_min},{args.maze_y_max}] m. '
+          f'Pixeles fuera marcados como desconocido.')
+
     label = occ
 
     # ── 6. Mapas ROS y de visualizacion ──────────────────────────────────────
