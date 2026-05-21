@@ -227,7 +227,7 @@ private:
   }
 
   bool do_planning() {
-    if (!map_loaded_ || !map_dron_loaded_) {
+    if (!map_loaded_ && !map_dron_loaded_) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
           "Esperando mapas... SLAM recibido: %s, Dron recibido: %s", 
           map_loaded_ ? "SI" : "NO", map_dron_loaded_ ? "SI" : "NO");
