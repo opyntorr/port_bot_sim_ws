@@ -238,7 +238,7 @@ class ControlTrayectoria(Node):
                 self.get_logger().error("CRITICO: El LIDAR esta recibiendo casi todos los datos invalidos (inf/nan).")
 
     def get_current_pose(self):
-        # 1. Intentar obtener la pose corregida por AMCL a traves de TF
+        # Intentar obtener la pose corregida por AMCL a traves de TF
         try:
             trans = self.tf_buffer.lookup_transform('map', 'base_footprint', rclpy.time.Time())
             x = trans.transform.translation.x
@@ -248,72 +248,12 @@ class ControlTrayectoria(Node):
             
             self.first_aruco_received = True # Marca inicializado
             return x, y, theta
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            pass
-
-        # 2. Obtener la odometria del callback directo (FALLBACK)
-        x_o = self._x_o
-        y_o = self._y_o
-        theta_o = self._theta_o
-
-        # 3. Intentar obtener la pose absoluta del aruco (FALLBACK INICIAL)
-        x_a_raw, y_a_raw, theta_a_raw = None, None, None
-        try:
-            trans_aruco = self.tf_buffer.lookup_transform('map', 'carrito_aruco', rclpy.time.Time())
-            stamp = trans_aruco.header.stamp
-            current_aruco_timestamp = (stamp.sec, stamp.nanosec)
-            
-            x_a_raw = trans_aruco.transform.translation.x
-            y_a_raw = trans_aruco.transform.translation.y
-            q_a_raw = trans_aruco.transform.rotation
-            euler_a_raw = tf_transformations.euler_from_quaternion([q_a_raw.x, q_a_raw.y, q_a_raw.z, q_a_raw.w])
-            theta_a_raw = euler_a_raw[2]
-            
-            if self.last_aruco_timestamp != current_aruco_timestamp:
-                self.last_aruco_timestamp = current_aruco_timestamp
-                
-                if x_o is not None and not self.first_aruco_received:
-                    theta_a_map = theta_a_raw
-                    self.odom_offset_theta = math.atan2(math.sin(theta_a_map - theta_o), math.cos(theta_a_map - theta_o))
-                    self.odom_offset_x = x_a_raw - (x_o * math.cos(self.odom_offset_theta) - y_o * math.sin(self.odom_offset_theta))
-                    self.odom_offset_y = y_a_raw - (x_o * math.sin(self.odom_offset_theta) + y_o * math.cos(self.odom_offset_theta))
-                    
-                    self.first_aruco_received = True
-                    self.get_logger().info("Snapshot ArUco registrado. AMCL se encargará de map->odom.")
-
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-            pass
-
-        # 4. Calcular la posicion final estimada combinada (FALLBACK)
-        if x_o is not None:
-            if self.first_aruco_received:
-                x_curr = self.odom_offset_x + x_o * math.cos(self.odom_offset_theta) - y_o * math.sin(self.odom_offset_theta)
-                y_curr = self.odom_offset_y + x_o * math.sin(self.odom_offset_theta) + y_o * math.cos(self.odom_offset_theta)
-                theta_curr = self.odom_offset_theta + theta_o
-                theta_curr = math.atan2(math.sin(theta_curr), math.cos(theta_curr))
-                return x_curr, y_curr, theta_curr
-            else:
-                elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
-                if elapsed > 4.0:
-                    self.get_logger().warn("No se detecta ArUco. Iniciando por Odometria cruda.")
-                    self.odom_offset_x = 0.0
-                    self.odom_offset_y = 0.0
-                    self.odom_offset_theta = 0.0
-                    self.first_aruco_received = True
-                    return x_o, y_o, theta_o
-
-        now = self.get_clock().now()
-        if self.last_log_time is not None and (now - self.last_log_time).nanoseconds / 1e9 > 5.0:
-            if x_o is None:
-                self.get_logger().info("Esperando datos de odometría en /odom...")
-            else:
-                self.get_logger().info("Odometría OK. Esperando snapshot de ArUco o AMCL (4s timeout)...")
-            self.last_log_time = now
-
-        if x_a_raw is not None:
-            return x_a_raw, y_a_raw, theta_a_raw
-
-        return None, None, None
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
+            now = self.get_clock().now()
+            if self.last_log_time is not None and (now - self.last_log_time).nanoseconds / 1e9 > 5.0:
+                self.get_logger().info(f"Esperando árbol TF (map -> base_footprint)... AMCL inicializando o desincronizado. Error: {str(e)}")
+                self.last_log_time = now
+            return None, None, None
 
 
 
