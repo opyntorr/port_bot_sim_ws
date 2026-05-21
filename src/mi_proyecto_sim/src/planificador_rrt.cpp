@@ -32,7 +32,10 @@ double get_dist(Point p1, Point p2) {
 bool check_collision(const Mat &map, Point p1, Point p2) {
   LineIterator it(map, p1, p2, 8);
   for (int i = 0; i < it.count; i++, ++it) {
-    if (map.at<uchar>(it.pos()) < 200)
+    // Solo choca si la celda es negra (obstáculo ocupado e inflado, cercano a 0).
+    // Permite navegar por espacio libre (255) y desconocido (128) para que
+    // el SLAM dinámico pueda explorar hacia la meta.
+    if (map.at<uchar>(it.pos()) < 50)
       return true;
   }
   return false;
