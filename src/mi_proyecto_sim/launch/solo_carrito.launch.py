@@ -172,49 +172,27 @@ def generate_launch_description():
         ],
     )
 
-    # Usa el PGM previo como prior del SLAM.
-    slam_occupancy_grid_node = Node(
-        package='mi_proyecto_sim',
-        executable='slam_occupancy_grid.py',
-        name='slam_occupancy_grid',
+    # SLAM Toolbox oficial (Reemplaza a slam_occupancy_grid y amcl_localizer)
+    # Realiza SLAM en tiempo real y publica tanto el /map como la TF map -> odom
+    slam_toolbox_node = Node(
+        package='slam_toolbox',
+        executable='async_slam_toolbox_node',
+        name='slam_toolbox',
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'pgm_path': mapa_pgm,
-            'pgm_resolution': 0.002,
-            'pgm_origin_x': -3.35,
-            'pgm_origin_y': -3.84,
-            'map_resolution': 0.05,
-            'map_width': 160,
-            'map_height': 180,
-            'map_origin_x': -4.0,
-            'map_origin_y': -4.5,
-            'map_to_odom_yaw': 0.0,
-            # AMCL se encarga de publicar map->odom; este nodo solo da el mapa.
-            'publish_map_to_odom_tf': False,
-        }],
-    )
-
-    # AMCL casero: localizacion por filtro de particulas usando /map + /scan_filtered.
-    # Publica TF map->odom corrigiendo continuamente la deriva de la odom de ruedas.
-    amcl_node = Node(
-        package='mi_proyecto_sim',
-        executable='amcl_localizer.py',
-        name='amcl_localizer',
-        output='screen',
-        parameters=[{
-            'use_sim_time': True,
-            'num_particles': 500,
-            'laser_max_range': 5.0,
-            'sigma_hit': 0.35,  # Más permisivo con desalineaciones del mapa (antes 0.2)
-            'z_hit': 0.90,
-            'z_rand': 0.10,     # Mayor tolerancia a obstáculos dinámicos/no mapeados
-            'laser_subsample': 10,
-            'update_min_d': 0.10,
-            'update_min_a': 0.10,
-            'init_from_aruco': True,
-            'init_std_xy': 0.3,
-            'init_std_yaw': 0.3,
+            'odom_frame': 'odom',
+            'base_frame': 'base_footprint',
+            'map_frame': 'map',
+            'scan_topic': '/scan_filtered',
+            'mode': 'mapping',
+            'resolution': 0.05,
+            'max_laser_range': 5.0,
+            'transform_publish_period': 0.05,  # 20 Hz para TF suave
+            'map_update_interval': 1.0,
+            'minimum_time_interval': 0.1,
+            'transform_timeout': 0.2,
+            'tf_buffer_duration': 1.0,
         }],
     )
 
@@ -291,8 +269,7 @@ def generate_launch_description():
         teleop,
         filtro_lidar_node,
         publicador_tfs_node,
-        slam_occupancy_grid_node,
-        amcl_node,
+        slam_toolbox_node,
         planificador_rrt_node,
         rosbridge_server,
         foxglove_bridge_node,

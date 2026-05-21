@@ -198,15 +198,6 @@ def generate_launch_description():
         }]
     )
 
-    # TF estática por defecto: map → odom (identidad).
-    # control_trayectoria la sobreescribirá con la calibración ArUco cuando arranque.
-    static_map_to_odom = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='static_map_to_odom',
-        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-        output='screen'
-    )
 
     # 6. Servidor de Mapas (Nav2 Map Server) — COMENTADO: reemplazado por slam_occupancy_grid
     # map_server_node = Node(
@@ -242,47 +233,28 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    # 9. SLAM Occupancy Grid (Fusion Dron + LiDAR con replanificacion)
-    # pgm_resolution y pgm_origin se leen del YAML automaticamente;
-    # los valores aqui son fallback si el YAML no existe.
-    slam_occupancy_grid_node = Node(
-        package='mi_proyecto_sim',
-        executable='slam_occupancy_grid.py',
-        name='slam_occupancy_grid',
+    # SLAM Toolbox oficial (Reemplaza a slam_occupancy_grid y amcl_localizer)
+    slam_toolbox_node = Node(
+        package='slam_toolbox',
+        executable='async_slam_toolbox_node',
+        name='slam_toolbox',
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'pgm_path': mapa_pgm,
-            'pgm_resolution': 0.002,
-            'pgm_origin_x': -3.35,
-            'pgm_origin_y': -3.84,
-            'map_resolution': 0.05,
-            'map_width': 160,
-            'map_height': 180,
-            'map_origin_x': -4.0,
-            'map_origin_y': -4.5,
-            'map_to_odom_yaw': 0.0,
-        }]
-    )
-
-    # 10. SLAM Toolbox — COMENTADO: reemplazado por slam_occupancy_grid
-    # slam_node = Node(
-    #     package='slam_toolbox',
-    #     executable='async_slam_toolbox_node',
-    #     name='slam_toolbox',
-    #     output='screen',
-    #     parameters=[{
-    #         'use_sim_time': True,
-    #         'odom_frame': 'map',
-    #         'base_frame': 'base_footprint',
-    #         'map_frame': 'map_slam',
-    #         'scan_topic': '/scan_filtered',
-    #         'mode': 'mapping'
-    #     }],
-    #     remappings=[('/map', '/map_slam')]
-    # )
-
-    # Nodo de Planificación de Ruta
+            'odom_frame': 'odom',
+            'base_frame': 'base_footprint',
+            'map_frame': 'map',
+            'scan_topic': '/scan_filtered',
+            'mode': 'mapping',
+            'resolution': 0.05,
+            'max_laser_range': 5.0,
+            'transform_publish_period': 0.05,
+            'map_update_interval': 1.0,
+            'minimum_time_interval': 0.1,
+            'transform_timeout': 0.2,
+            'tf_buffer_duration': 1.0,
+        }],
+    )# Nodo de Planificación de Ruta
     # planificador_node = Node(
     #     package='mi_proyecto_sim',
     #     executable='planificador_astar.py',
@@ -427,7 +399,7 @@ def generate_launch_description():
             target_action=mision_dron_node,
             on_exit=[
                 publicador_tfs_node,
-                slam_occupancy_grid_node,
+                slam_toolbox_node,
                 planificador_rrt_node
             ]
         )
@@ -466,7 +438,7 @@ def generate_launch_description():
         joy_node,
         teleop,
         detector_aruco_node,
-        static_map_to_odom,          # Puente TF: map -> odom (identidad por defecto)
+
         filtro_lidar_node,
         optitrack_sim,
         pose_fuser,
