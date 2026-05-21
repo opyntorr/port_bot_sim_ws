@@ -268,12 +268,12 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'noise_std_x': 0.0,
-            'noise_std_y': 0.0,
-            'noise_std_yaw': 0.0,
-            'drift_x_per_sec': 0.0,
-            'drift_y_per_sec': 0.0,
-            'drift_yaw_per_sec': 0.0,
+            'noise_std_x': 0.002,         # 2 mm de ruido aleatorio por segundo
+            'noise_std_y': 0.002,         # 2 mm de ruido lateral
+            'noise_std_yaw': 0.001,       # Ligera vibración rotacional
+            'drift_x_per_sec': 0.001,     # Deriva de 1 mm por segundo (ej. llantas desgastadas)
+            'drift_y_per_sec': -0.0005,   # Ligera deriva lateral
+            'drift_yaw_per_sec': 0.0005,  # Deriva de ~1.7 grados por minuto (error de calibración de llantas)
         }],
     )
 

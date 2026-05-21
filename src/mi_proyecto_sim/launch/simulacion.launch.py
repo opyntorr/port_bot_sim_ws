@@ -440,12 +440,12 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'noise_std_x': 0.0,
-            'noise_std_y': 0.0,
-            'noise_std_yaw': 0.0,
-            'drift_x_per_sec': 0.0,
-            'drift_y_per_sec': 0.0,
-            'drift_yaw_per_sec': 0.0,
+            'noise_std_x': 0.002,
+            'noise_std_y': 0.002,
+            'noise_std_yaw': 0.001,
+            'drift_x_per_sec': 0.001,
+            'drift_y_per_sec': -0.0005,
+            'drift_yaw_per_sec': 0.0005,
         }],
     )
 
