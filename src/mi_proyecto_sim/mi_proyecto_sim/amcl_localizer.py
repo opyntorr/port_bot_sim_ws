@@ -176,10 +176,12 @@ class AmclLocalizer(Node):
     def _try_initialize(self):
         if self.likelihood_field is None:
             return
+            
         x = self.get_parameter('init_x').value
         y = self.get_parameter('init_y').value
         yaw = self.get_parameter('init_yaw').value
         used_aruco = False
+        
         if self.init_from_aruco:
             try:
                 tf = self.tf_buffer.lookup_transform(
@@ -189,7 +191,9 @@ class AmclLocalizer(Node):
                 yaw = yaw_from_quat(tf.transform.rotation)
                 used_aruco = True
             except Exception:
-                pass
+                self.get_logger().info('Esperando la TF map -> carrito_aruco para inicializar AMCL...')
+                return # Salir y reintentar despues (se llama en cada timer de publicacion)
+                
         self._init_particles_around(x, y, yaw)
         self.initialized = True
         src = 'TF carrito_aruco' if used_aruco else 'parametros init_*'
@@ -344,9 +348,11 @@ class AmclLocalizer(Node):
     # Publicacion de TF + visualizacion
     # ------------------------------------------------------------
     def _publish_state(self):
-        if not self.initialized or self.estimated_pose is None:
+        if not self.initialized:
+            self._try_initialize()
             return
-        if self.last_odom_xy_yaw is None:
+            
+        if self.estimated_pose is None or self.last_odom_xy_yaw is None:
             return
 
         # TF map->odom: tal que map = T_map_odom * odom para la pose estimada.

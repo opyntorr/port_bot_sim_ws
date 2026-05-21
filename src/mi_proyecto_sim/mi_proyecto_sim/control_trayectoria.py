@@ -238,96 +238,78 @@ class ControlTrayectoria(Node):
                 self.get_logger().error("CRITICO: El LIDAR esta recibiendo casi todos los datos invalidos (inf/nan).")
 
     def get_current_pose(self):
-        # 1. Obtener la odometria del callback directo
+        # 1. Intentar obtener la pose corregida por AMCL a traves de TF
+        try:
+            trans = self.tf_buffer.lookup_transform('map', 'base_footprint', rclpy.time.Time())
+            x = trans.transform.translation.x
+            y = trans.transform.translation.y
+            q = trans.transform.rotation
+            _, _, theta = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+            
+            self.first_aruco_received = True # Marca inicializado
+            return x, y, theta
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            pass
+
+        # 2. Obtener la odometria del callback directo (FALLBACK)
         x_o = self._x_o
         y_o = self._y_o
         theta_o = self._theta_o
 
-        # 2. Intentar obtener la pose absoluta del aruco
+        # 3. Intentar obtener la pose absoluta del aruco (FALLBACK INICIAL)
         x_a_raw, y_a_raw, theta_a_raw = None, None, None
         try:
             trans_aruco = self.tf_buffer.lookup_transform('map', 'carrito_aruco', rclpy.time.Time())
             stamp = trans_aruco.header.stamp
             current_aruco_timestamp = (stamp.sec, stamp.nanosec)
             
-            # Guardar pose cruda del ArUco como fallback
             x_a_raw = trans_aruco.transform.translation.x
             y_a_raw = trans_aruco.transform.translation.y
             q_a_raw = trans_aruco.transform.rotation
             euler_a_raw = tf_transformations.euler_from_quaternion([q_a_raw.x, q_a_raw.y, q_a_raw.z, q_a_raw.w])
-            # carrito_aruco TF ya es el heading real del carrito en map
-            # (el offset fisico ArUco-vs-forward se aplica en mision_dron.py).
             theta_a_raw = euler_a_raw[2]
             
-            # Solo actualizar offset si el tiempo avanzo (nueva lectura de camara)
             if self.last_aruco_timestamp != current_aruco_timestamp:
                 self.last_aruco_timestamp = current_aruco_timestamp
                 
                 if x_o is not None and not self.first_aruco_received:
-                    # Calcular el target offset (transformacion de map a odom)
                     theta_a_map = theta_a_raw
-                    
                     self.odom_offset_theta = math.atan2(math.sin(theta_a_map - theta_o), math.cos(theta_a_map - theta_o))
                     self.odom_offset_x = x_a_raw - (x_o * math.cos(self.odom_offset_theta) - y_o * math.sin(self.odom_offset_theta))
                     self.odom_offset_y = y_a_raw - (x_o * math.sin(self.odom_offset_theta) + y_o * math.cos(self.odom_offset_theta))
                     
                     self.first_aruco_received = True
-                    self.get_logger().info(f"¡Snapshot Realizado! Offset: [{self.odom_offset_x:.2f}, {self.odom_offset_y:.2f}, {math.degrees(self.odom_offset_theta):.2f}º]")
-                    
-                    # PUBLICAR TRANSFORMACION ESTATICA map -> odom para completar el arbol de TF
-                    # DESACTIVADO: amcl_localizer.py ya publica map -> odom dinámicamente.
-                    # Publicar esto como estático causa teletransportes y conflictos severos.
-                    # t = TransformStamped()
-                    # t.header.stamp = self.get_clock().now().to_msg()
-                    # t.header.frame_id = 'map'
-                    # t.child_frame_id = 'odom'
-                    # t.transform.translation.x = self.odom_offset_x
-                    # t.transform.translation.y = self.odom_offset_y
-                    # t.transform.translation.z = 0.0
-                    
-                    # q = tf_transformations.quaternion_from_euler(0, 0, self.odom_offset_theta)
-                    # t.transform.rotation.x = q[0]
-                    # t.transform.rotation.y = q[1]
-                    # t.transform.rotation.z = q[2]
-                    # t.transform.rotation.w = q[3]
-                    
-                    # self.static_tf_broadcaster.sendTransform(t)
                     self.get_logger().info("Snapshot ArUco registrado. AMCL se encargará de map->odom.")
 
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             pass
 
-        # 3. Calcular la posicion final estimada combinada
+        # 4. Calcular la posicion final estimada combinada (FALLBACK)
         if x_o is not None:
             if self.first_aruco_received:
-                # Caso A: Tenemos calibración ArUco (Snapshot) o ya forzamos inicio
                 x_curr = self.odom_offset_x + x_o * math.cos(self.odom_offset_theta) - y_o * math.sin(self.odom_offset_theta)
                 y_curr = self.odom_offset_y + x_o * math.sin(self.odom_offset_theta) + y_o * math.cos(self.odom_offset_theta)
                 theta_curr = self.odom_offset_theta + theta_o
                 theta_curr = math.atan2(math.sin(theta_curr), math.cos(theta_curr))
                 return x_curr, y_curr, theta_curr
             else:
-                # Caso B: No hay ArUco todavía. ¿Forzamos inicio por Odometría pura?
                 elapsed = (self.get_clock().now() - self.start_time).nanoseconds / 1e9
                 if elapsed > 4.0:
-                    self.get_logger().warn("No se detecta ArUco (Tablero incompleto). Iniciando por Odometria.")
-                    # Usamos la odometría actual como pose absoluta para no saltar
+                    self.get_logger().warn("No se detecta ArUco. Iniciando por Odometria cruda.")
                     self.odom_offset_x = 0.0
                     self.odom_offset_y = 0.0
                     self.odom_offset_theta = 0.0
-                    self.first_aruco_received = True # Marcamos como recibido para entrar en Caso A
+                    self.first_aruco_received = True
                     return x_o, y_o, theta_o
 
-        # DIAGNOSTICOS: Informar por qué no tenemos pose todavía
         now = self.get_clock().now()
         if self.last_log_time is not None and (now - self.last_log_time).nanoseconds / 1e9 > 5.0:
             if x_o is None:
                 self.get_logger().info("Esperando datos de odometría en /odom...")
             else:
-                self.get_logger().info("Odometría OK. Esperando snapshot de ArUco para alinear (4s timeout)...")
+                self.get_logger().info("Odometría OK. Esperando snapshot de ArUco o AMCL (4s timeout)...")
             self.last_log_time = now
 
-        # FALLBACK: Si no hay odom aun, usar ArUco crudo para arrancar
         if x_a_raw is not None:
             return x_a_raw, y_a_raw, theta_a_raw
 
