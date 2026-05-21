@@ -31,6 +31,7 @@ def generate_launch_description():
     maps_dir = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps')
     mapa_pgm = os.path.join(maps_dir, 'mapa_mision.pgm')
     arucos_yaml = os.path.join(maps_dir, 'arucos.yaml')
+    mapa_yaml = os.path.join(maps_dir, 'mapa_mision.yaml')
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
     xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco.urdf.xacro')
@@ -157,8 +158,33 @@ def generate_launch_description():
     )
 
     # =========================================================
-    # ARTEFACTOS DE LA CORRIDA ANTERIOR
+    # ARTEFACTOS DE LA CORRIDA ANTERIOR (MISION DRON)
     # =========================================================
+
+    # Servidor de Mapas (Nav2) para publicar el mapa estático del dron (stitching)
+    map_server_node = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server',
+        output='screen',
+        parameters=[{
+            'yaml_filename': mapa_yaml,
+            'use_sim_time': True
+        }],
+        remappings=[('/map', '/map_dron')]  # Publicar en /map_dron para visualización pura
+    )
+
+    lifecycle_manager_node = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_map',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'autostart': True,
+            'node_names': ['map_server']
+        }]
+    )
 
     # Republica las TFs estaticas de los ArUcos leyendo arucos.yaml previo.
     publicador_tfs_node = Node(
@@ -268,6 +294,8 @@ def generate_launch_description():
         joy_node,
         teleop,
         filtro_lidar_node,
+        map_server_node,
+        lifecycle_manager_node,
         publicador_tfs_node,
         slam_toolbox_node,
         planificador_rrt_node,

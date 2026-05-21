@@ -199,30 +199,31 @@ def generate_launch_description():
     )
 
 
-    # 6. Servidor de Mapas (Nav2 Map Server) — COMENTADO: reemplazado por slam_occupancy_grid
-    # map_server_node = Node(
-    #     package='nav2_map_server',
-    #     executable='map_server',
-    #     name='map_server',
-    #     output='screen',
-    #     parameters=[{
-    #         'yaml_filename': mapa_yaml,
-    #         'use_sim_time': True
-    #     }]
-    # )
+    # 6. Servidor de Mapas (Nav2 Map Server) para visualizar el mapa del dron
+    map_server_node = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server',
+        output='screen',
+        parameters=[{
+            'yaml_filename': mapa_yaml,
+            'use_sim_time': True
+        }],
+        remappings=[('/map', '/map_dron')]  # Publicar en /map_dron para no chocar con SLAM Toolbox
+    )
 
-    # 7. Administrador de Ciclo de Vida — COMENTADO: ya no se necesita sin map_server
-    # lifecycle_manager_node = Node(
-    #     package='nav2_lifecycle_manager',
-    #     executable='lifecycle_manager',
-    #     name='lifecycle_manager_map',
-    #     output='screen',
-    #     parameters=[{
-    #         'use_sim_time': True,
-    #         'autostart': True,
-    #         'node_names': ['map_server']
-    #     }]
-    # )
+    # 7. Administrador de Ciclo de Vida para arrancar el map_server
+    lifecycle_manager_node = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_map',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'autostart': True,
+            'node_names': ['map_server']
+        }]
+    )
 
     # 8. Filtro LiDAR (Software 190 grados)
     filtro_lidar_node = Node(
@@ -398,6 +399,8 @@ def generate_launch_description():
         event_handler=OnProcessExit(
             target_action=mision_dron_node,
             on_exit=[
+                map_server_node,
+                lifecycle_manager_node,
                 publicador_tfs_node,
                 slam_toolbox_node,
                 planificador_rrt_node
