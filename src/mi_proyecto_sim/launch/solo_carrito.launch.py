@@ -206,9 +206,9 @@ def generate_launch_description():
             'use_sim_time': True,
             'num_particles': 500,
             'laser_max_range': 5.0,
-            'sigma_hit': 0.2,
-            'z_hit': 0.95,
-            'z_rand': 0.05,
+            'sigma_hit': 0.35,  # Más permisivo con desalineaciones del mapa (antes 0.2)
+            'z_hit': 0.90,
+            'z_rand': 0.10,     # Mayor tolerancia a obstáculos dinámicos/no mapeados
             'laser_subsample': 10,
             'update_min_d': 0.10,
             'update_min_a': 0.10,

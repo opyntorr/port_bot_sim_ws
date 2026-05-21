@@ -304,9 +304,19 @@ class ControlTrayectoria(Node):
         
         if not self.path_points or self.ruta_completada:
             return
+            
         x, y, theta = self.get_current_pose()
         if x is None:
+            # FRENADO DE EMERGENCIA: Si perdemos la pose (lag de AMCL o desconexión TF),
+            # no podemos seguir avanzando a ciegas. Frenar progresivamente.
+            self.v_prev *= 0.5
+            self.w_prev *= 0.5
+            cmd = Twist()
+            cmd.linear.x = float(self.v_prev)
+            cmd.angular.z = float(self.w_prev)
+            self.cmd_pub.publish(cmd)
             return
+            
         # 1. Calcular punto de control desplazado (x_c, y_c)
         x_c = x + self.h * math.cos(theta)
         y_c = y + self.h * math.sin(theta)
