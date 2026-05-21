@@ -398,25 +398,9 @@ def main():
     
     occ[covered & (obstacles > 0)] = 0
 
-    # Recortar a la bounding box del laberinto: todo fuera = desconocido (205).
-    # Esto elimina el "ghosting" de las fotos cuyos bordes capturan area fuera
-    # de las paredes del laberinto.
-    H_occ, W_occ = occ.shape
-    cols_grid, rows_grid = np.meshgrid(
-        np.arange(W_occ, dtype=np.float32),
-        np.arange(H_occ, dtype=np.float32),
-    )
-    world_x_grid = x_min + cols_grid * args.resolution
-    # rows van top->down en imagen, world_y va abajo->arriba
-    world_y_grid = y_max - rows_grid * args.resolution
-    inside_maze = (
-        (world_x_grid >= args.maze_x_min) & (world_x_grid <= args.maze_x_max)
-        & (world_y_grid >= args.maze_y_min) & (world_y_grid <= args.maze_y_max)
-    )
-    occ[~inside_maze] = 205
-    print(f'[stitcher] Recorte aplicado: maze x=[{args.maze_x_min},{args.maze_x_max}], '
-          f'y=[{args.maze_y_min},{args.maze_y_max}] m. '
-          f'Pixeles fuera marcados como desconocido.')
+    # Nota: Se eliminó el recorte (crop) artificial del laberinto para que el 
+    # mosaico completo se visualice en RViz sin cortes.
+    print(f'[stitcher] Exportando mapa completo sin recorte artificial.')
 
     label = occ
 
