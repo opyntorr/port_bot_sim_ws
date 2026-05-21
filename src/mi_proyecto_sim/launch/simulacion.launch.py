@@ -77,8 +77,8 @@ def generate_launch_description():
             '/model/rosmaster_x3/pose@geometry_msgs/msg/PoseStamped[ignition.msgs.Pose'
         ],
         remappings=[
-            ('/model/rosmaster_x3/odometry', '/odom'),
-            ('/model/rosmaster_x3/tf', '/tf'),
+            ('/model/rosmaster_x3/odometry', '/odom_raw'),
+            ('/model/rosmaster_x3/tf', '/tf_raw'),
             ('/model/rosmaster_x3/pose', '/odom_pose')
         ],
         output='screen'
@@ -433,6 +433,22 @@ def generate_launch_description():
         )
     )
 
+    odom_noise_node = Node(
+        package='mi_proyecto_sim',
+        executable='odom_noise_filter.py',
+        name='odom_noise_filter',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'noise_std_x': 0.0,
+            'noise_std_y': 0.0,
+            'noise_std_yaw': 0.0,
+            'drift_x_per_sec': 0.0,
+            'drift_y_per_sec': 0.0,
+            'drift_yaw_per_sec': 0.0,
+        }],
+    )
+
     # Empaquetar y lanzar todo simultaneamente
     return LaunchDescription([
         limpiar_artefactos,
@@ -461,5 +477,6 @@ def generate_launch_description():
         rosbridge_server,
         foxglove_bridge_node,
         web_video_server_node,
+        odom_noise_node,
     ])
 

@@ -51,12 +51,12 @@ class ControlTrayectoria(Node):
         self._y_o = None
         self._theta_o = None
         
-        # Parametros del controlador de Kelly & Diaz (Sintonizados para fidelidad)
-        self.h = 0.1          # Desplazamiento del punto de interes
-        self.k_px = 2.0        # Ganancia proporcional (ligeramente menor para suavidad)
-        self.k_py = 2.0        
+        # Parametros del controlador de Kelly & Diaz (Sintonizados para robustez ante deriva)
+        self.h = 0.25          # Aumentado (antes 0.1) para absorber el ruido y la deriva sin sobreaccionar
+        self.k_px = 1.5        # Ganancia proporcional bajada para estabilidad
+        self.k_py = 1.5        
         self.v_max = 0.35      # Velocidad maxima permitida
-        self.w_max = 1.2       # Velocidad angular maxima permitida
+        self.w_max = 1.0       # Velocidad angular suave
 
         # Variables para suavizado (Filtro Pasa-Baja)
         self.v_prev = 0.0
@@ -146,8 +146,7 @@ class ControlTrayectoria(Node):
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self._theta_o = math.atan2(siny_cosp, cosy_cosp)
-        
-        # Publicar TF dinámico de odom a base_footprint
+        # Publicar TF dinámico de odom a base_footprint sin prefijos
         t = TransformStamped()
         t.header.stamp = msg.header.stamp if msg.header.stamp.sec > 0 else self.get_clock().now().to_msg()
         t.header.frame_id = 'odom'
@@ -276,22 +275,24 @@ class ControlTrayectoria(Node):
                     self.get_logger().info(f"¡Snapshot Realizado! Offset: [{self.odom_offset_x:.2f}, {self.odom_offset_y:.2f}, {math.degrees(self.odom_offset_theta):.2f}º]")
                     
                     # PUBLICAR TRANSFORMACION ESTATICA map -> odom para completar el arbol de TF
-                    t = TransformStamped()
-                    t.header.stamp = self.get_clock().now().to_msg()
-                    t.header.frame_id = 'map'
-                    t.child_frame_id = 'odom'
-                    t.transform.translation.x = self.odom_offset_x
-                    t.transform.translation.y = self.odom_offset_y
-                    t.transform.translation.z = 0.0
+                    # DESACTIVADO: amcl_localizer.py ya publica map -> odom dinámicamente.
+                    # Publicar esto como estático causa teletransportes y conflictos severos.
+                    # t = TransformStamped()
+                    # t.header.stamp = self.get_clock().now().to_msg()
+                    # t.header.frame_id = 'map'
+                    # t.child_frame_id = 'odom'
+                    # t.transform.translation.x = self.odom_offset_x
+                    # t.transform.translation.y = self.odom_offset_y
+                    # t.transform.translation.z = 0.0
                     
-                    q = tf_transformations.quaternion_from_euler(0, 0, self.odom_offset_theta)
-                    t.transform.rotation.x = q[0]
-                    t.transform.rotation.y = q[1]
-                    t.transform.rotation.z = q[2]
-                    t.transform.rotation.w = q[3]
+                    # q = tf_transformations.quaternion_from_euler(0, 0, self.odom_offset_theta)
+                    # t.transform.rotation.x = q[0]
+                    # t.transform.rotation.y = q[1]
+                    # t.transform.rotation.z = q[2]
+                    # t.transform.rotation.w = q[3]
                     
-                    self.static_tf_broadcaster.sendTransform(t)
-                    self.get_logger().info("TF estática 'map' -> 'odom' publicada con éxito. Navegando por odometría.")
+                    # self.static_tf_broadcaster.sendTransform(t)
+                    self.get_logger().info("Snapshot ArUco registrado. AMCL se encargará de map->odom.")
 
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             pass
@@ -522,12 +523,13 @@ class ControlTrayectoria(Node):
             while e_theta > math.pi: e_theta -= 2.0 * math.pi
             while e_theta < -math.pi: e_theta += 2.0 * math.pi
             
-            if abs(e_theta) > 0.05:
+            # Aumentar ventana de tolerancia a ~8.5 grados para evitar saltar sobre la meta por el drift
+            if abs(e_theta) > 0.15:
                 v = 0.0
-                # Asegurar velocidad mínima para vencer la fricción estática de Gazebo
-                w = 1.5 * e_theta
-                if abs(w) < 0.3:
-                    w = 0.3 if w > 0 else -0.3
+                # Control P más suave para no sobre-reaccionar y vencer fricción
+                w = 1.0 * e_theta
+                if abs(w) < 0.35:
+                    w = 0.35 if w > 0 else -0.35
             else:
                 self.pure_rotation_mode = False # Termina la rotación, sigue Kelly & Diaz
         
