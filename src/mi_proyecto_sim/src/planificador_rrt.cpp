@@ -92,10 +92,6 @@ public:
     map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
       "/map", custom_qos, std::bind(&RRTRosNode::map_callback, this, std::placeholders::_1));
 
-    // Suscriptor al mapa estático del dron
-    map_dron_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-      "/map_dron", custom_qos, std::bind(&RRTRosNode::map_dron_callback, this, std::placeholders::_1));
-
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -158,12 +154,6 @@ public:
     RCLCPP_INFO(this->get_logger(), "Mapa dinámico (SLAM) inflado (radio=%d px = %.2f m).", robot_radius, robot_radius_m);
   }
 
-  void map_dron_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
-    (void)msg;
-    map_dron_loaded_ = true;
-    RCLCPP_INFO_ONCE(this->get_logger(), "Mapa estático del dron recibido en RRT.");
-  }
-
   void publishPath(const vector<Point>& cv_path, double theta_goal = 0.0) {
     nav_msgs::msg::Path ros_path;
     ros_path.header.stamp = this->get_clock()->now();
@@ -197,7 +187,6 @@ public:
 
 private:
   bool map_loaded_ = false;
-  bool map_dron_loaded_ = false;
   Mat map_original_;
   Mat map_inflated_;
   Mat map_relaxed_;
@@ -208,7 +197,6 @@ private:
   double ros_yaw_goal_ = 0.0;  // Orientacion objetivo en frame ROS (para publicar en el Path)
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
-  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_dron_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr replan_sub_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -227,10 +215,9 @@ private:
   }
 
   bool do_planning() {
-    if (!map_loaded_ || !map_dron_loaded_) {
+    if (!map_loaded_) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-          "Esperando mapas... SLAM recibido: %s, Dron recibido: %s", 
-          map_loaded_ ? "SI" : "NO", map_dron_loaded_ ? "SI" : "NO");
+          "Esperando mapa en el tópico /map...");
         return false;
     }
 
