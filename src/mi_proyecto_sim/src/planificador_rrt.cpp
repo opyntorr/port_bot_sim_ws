@@ -114,6 +114,10 @@ public:
     map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
       "/map_dron", custom_qos, std::bind(&RRTRosNode::map_callback, this, std::placeholders::_1));
 
+    // Suscriptor al mapa de SLAM (para obstáculos dinámicos)
+    map_slam_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+      "/map", custom_qos, std::bind(&RRTRosNode::slam_map_callback, this, std::placeholders::_1));
+
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
@@ -136,6 +140,64 @@ public:
   void pixel_to_world(const Point& p, double& wx, double& wy) {
     wx = p.x * map_resolution_ + map_origin_x_;
     wy = (map_height_ - 1 - p.y) * map_resolution_ + map_origin_y_;
+  }
+
+  void update_inflated_maps() {
+    double robot_radius_m = this->get_parameter_or("robot_radius_m", 0.19);
+    int robot_radius = max(1, static_cast<int>(ceil(robot_radius_m / map_resolution_)));
+    Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
+    erode(map_original_, map_inflated_, kernel);
+
+    int relaxed_radius = max(1, static_cast<int>(ceil((robot_radius_m / 4.0) / map_resolution_)));
+    Mat kernel_relaxed = getStructuringElement(MORPH_RECT, Size(relaxed_radius * 2, relaxed_radius * 2));
+    erode(map_original_, map_relaxed_, kernel_relaxed);
+  }
+
+  void slam_map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+    if (!map_loaded_) return; // Necesitamos el mapa base primero
+
+    Mat new_map = map_stitched_base_.clone();
+
+    geometry_msgs::msg::TransformStamped tf_dron_from_map;
+    try {
+      tf_dron_from_map = tf_buffer_->lookupTransform("map_dron_origin", "map", tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "SLAM fusion: Esperando TF map_dron_origin <- map");
+      return;
+    }
+
+    int w = msg->info.width;
+    int h = msg->info.height;
+    double res = msg->info.resolution;
+    double ox = msg->info.origin.position.x;
+    double oy = msg->info.origin.position.y;
+
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        int idx = y * w + x;
+        int8_t val = msg->data[idx];
+        if (val > 60) { // Obstaculo en SLAM
+          double wx_map = x * res + ox;
+          double wy_map = y * res + oy;
+
+          geometry_msgs::msg::PoseStamped pose_map, pose_dron;
+          pose_map.header.frame_id = "map";
+          pose_map.pose.position.x = wx_map;
+          pose_map.pose.position.y = wy_map;
+          pose_map.pose.orientation.w = 1.0;
+
+          tf2::doTransform(pose_map, pose_dron, tf_dron_from_map);
+
+          Point p = world_to_pixel(pose_dron.pose.position.x, pose_dron.pose.position.y);
+          if (p.x >= 0 && p.x < new_map.cols && p.y >= 0 && p.y < new_map.rows) {
+            new_map.at<uchar>(p.y, p.x) = 0; // Ocupado
+          }
+        }
+      }
+    }
+
+    map_original_ = new_map;
+    update_inflated_maps();
   }
 
   void map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
@@ -175,25 +237,17 @@ public:
       downsampled = full_res;
       map_resolution_ = res_in;
     }
+    map_stitched_base_ = downsampled.clone();
     map_original_ = downsampled;
     map_origin_x_ = msg->info.origin.position.x;
     map_origin_y_ = msg->info.origin.position.y;
     map_height_ = h_out;
 
-    // Radio del robot en pixels (parametrizado desde el launch)
-    double robot_radius_m = this->get_parameter_or("robot_radius_m", 0.19);
-    int robot_radius = max(1, static_cast<int>(ceil(robot_radius_m / map_resolution_)));
-    Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
-    erode(map_original_, map_inflated_, kernel);
-
-    // Mapa relajado (1/4 del radio original) para fallback en zonas estrechas.
-    int relaxed_radius = max(1, static_cast<int>(ceil((robot_radius_m / 4.0) / map_resolution_)));
-    Mat kernel_relaxed = getStructuringElement(MORPH_RECT, Size(relaxed_radius * 2, relaxed_radius * 2));
-    erode(map_original_, map_relaxed_, kernel_relaxed);
+    update_inflated_maps();
 
     map_loaded_ = true;
-    RCLCPP_INFO(this->get_logger(), "Mapa stitched downsampleado a %dx%d @ %.3f m/px (factor=%d). Inflado radio=%d px = %.2f m.",
-      w_out, h_out, map_resolution_, downsample_factor, robot_radius, robot_radius_m);
+    RCLCPP_INFO(this->get_logger(), "Mapa stitched downsampleado a %dx%d @ %.3f m/px (factor=%d).",
+      w_out, h_out, map_resolution_, downsample_factor);
   }
 
   void publishPath(const vector<Point>& cv_path, double theta_goal = 0.0) {
@@ -245,6 +299,7 @@ public:
 
 private:
   bool map_loaded_ = false;
+  Mat map_stitched_base_;
   Mat map_original_;
   Mat map_inflated_;
   Mat map_relaxed_;
@@ -255,6 +310,7 @@ private:
   double ros_yaw_goal_ = 0.0;  // Orientacion objetivo en frame ROS (para publicar en el Path)
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_slam_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr replan_sub_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -357,10 +413,12 @@ private:
 
   bool compute_rrt(Point start, double theta_start, Point goal, double theta_goal, const Mat& map_in, bool is_relaxed) {
     Mat working_map = map_in.clone();
-    // Despejar el area inicial del robot para permitir que el planificador 
-    // encuentre una salida si el robot ya rozo la zona inflada de un obstaculo
-    int escape_radius = static_cast<int>(ceil(0.20 / map_resolution_));
+    // Despejar el area inicial del robot y de la meta para permitir que el planificador 
+    // encuentre una salida/llegada si el robot o la meta rozan la zona inflada de un obstaculo
+    // (muy util cuando hay drift entre SLAM y el mapa del dron)
+    int escape_radius = static_cast<int>(ceil(0.30 / map_resolution_));
     circle(working_map, start, escape_radius, Scalar(255), -1);
+    circle(working_map, goal, escape_radius, Scalar(255), -1);
 
     // Verificar que la meta no esta en colision
     bool goal_coll = check_collision(working_map, goal, goal);

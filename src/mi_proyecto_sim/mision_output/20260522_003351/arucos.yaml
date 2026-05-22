@@ -1,0 +1,21 @@
+aruco_1:
+  dist: 82.00152437607487
+  id: 1
+  source_img: wp_14.png
+  world_x: -0.08067162283263918
+  world_y: -1.397714326043584
+  yaw_world: 1.5707963267948966
+carrito:
+  dist: 119.96041013601112
+  id: 4
+  source_img: wp_15.png
+  world_x: -1.3860256829060646
+  world_y: -0.917508252511291
+  yaw_world: 1.5707963267948966
+meta:
+  dist: 72.83543093852057
+  id: 0
+  source_img: wp_03.png
+  world_x: 1.1396585904706356
+  world_y: 1.1900433497956429
+  yaw_world: -1.5707963267948966

@@ -1,0 +1,14 @@
+carrito:
+  dist: 136.7570839115839
+  id: 4
+  source_img: wp_15.png
+  world_x: -1.0552548155329744
+  world_y: -0.9175000824679813
+  yaw_world: 1.5707963267948966
+meta:
+  dist: 84.22032118200453
+  id: 0
+  source_img: wp_03.png
+  world_x: 1.086924462974498
+  world_y: 1.1900061963244672
+  yaw_world: -1.6001996149989017
