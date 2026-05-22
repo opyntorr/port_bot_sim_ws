@@ -1,8 +1,9 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler, TimerAction
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler, TimerAction, IncludeLaunchDescription
 from launch.event_handlers import OnProcessExit
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import Command
 from launch_ros.parameter_descriptions import ParameterValue
@@ -200,6 +201,8 @@ def generate_launch_description():
 
 
     # 6. Servidor de Mapas (Nav2 Map Server) para visualizar el mapa del dron
+    # frame_id='map_dron_origin' lo conecta a `map` (SLAM) via TF estatica
+    # publicada por publicador_tfs_arucos.
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
@@ -207,7 +210,8 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'yaml_filename': mapa_yaml,
-            'use_sim_time': True
+            'use_sim_time': True,
+            'frame_id': 'map_dron_origin',
         }],
         remappings=[('/map', '/map_dron')]  # Publicar en /map_dron para no chocar con SLAM Toolbox
     )
@@ -234,27 +238,19 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}]
     )
 
-    # SLAM Toolbox oficial (Reemplaza a slam_occupancy_grid y amcl_localizer)
-    slam_toolbox_node = Node(
-        package='slam_toolbox',
-        executable='async_slam_toolbox_node',
-        name='slam_toolbox',
-        output='screen',
-        parameters=[{
-            'use_sim_time': True,
-            'odom_frame': 'odom',
-            'base_frame': 'base_footprint',
-            'map_frame': 'map',
-            'scan_topic': '/scan_filtered',
-            'mode': 'mapping',
-            'resolution': 0.05,
-            'max_laser_range': 5.0,
-            'transform_publish_period': 0.05,
-            'map_update_interval': 1.0,
-            'minimum_time_interval': 0.1,
-            'transform_timeout': 0.2,
-            'tf_buffer_duration': 1.0,
-        }],
+    # SLAM Toolbox oficial - usa online_async_launch.py con yaml dedicado
+    # (patron tomado de dinav2/warehouse_bot, mantiene scan_topic=/scan_filtered)
+    slam_toolbox_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('slam_toolbox'),
+                'launch', 'online_async_launch.py'
+            )
+        ),
+        launch_arguments={
+            'slam_params_file': os.path.join(pkg_sim, 'config', 'mapper_params_online_async.yaml'),
+            'use_sim_time': 'true',
+        }.items(),
     )# Nodo de Planificación de Ruta
     # planificador_node = Node(
     #     package='mi_proyecto_sim',
@@ -402,7 +398,7 @@ def generate_launch_description():
                 map_server_node,
                 lifecycle_manager_node,
                 publicador_tfs_node,
-                slam_toolbox_node,
+                slam_toolbox_launch,
                 planificador_rrt_node
             ]
         )

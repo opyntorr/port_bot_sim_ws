@@ -15,6 +15,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 using namespace std;
 using namespace cv;
@@ -32,10 +33,31 @@ double get_dist(Point p1, Point p2) {
 bool check_collision(const Mat &map, Point p1, Point p2) {
   LineIterator it(map, p1, p2, 8);
   for (int i = 0; i < it.count; i++, ++it) {
-    if (map.at<uchar>(it.pos()) < 200)
+    if (map.at<uchar>(it.pos()) < 50)
       return true;
   }
   return false;
+}
+
+// Busca el pixel libre más cercano en espiral
+Point get_nearest_free_point(const Mat& map, Point pt, int max_radius = 50) {
+  if (pt.x >= 0 && pt.y >= 0 && pt.x < map.cols && pt.y < map.rows) {
+      if (map.at<uchar>(pt.y, pt.x) >= 50) return pt;
+  }
+  for (int r = 1; r <= max_radius; ++r) {
+    for (int dx = -r; dx <= r; ++dx) {
+      for (int dy = -r; dy <= r; ++dy) {
+        if (abs(dx) == r || abs(dy) == r) {
+          int nx = pt.x + dx;
+          int ny = pt.y + dy;
+          if (nx >= 0 && ny >= 0 && nx < map.cols && ny < map.rows) {
+            if (map.at<uchar>(ny, nx) >= 50) return Point(nx, ny);
+          }
+        }
+      }
+    }
+  }
+  return pt; // Fallback
 }
 
 vector<Point> smooth_path(const Mat &map, const vector<Point> &raw_path) {
@@ -88,9 +110,9 @@ public:
     auto custom_qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/rrt_path", custom_qos);
 
-    // Suscriptor al mapa dinámico (SLAM)
+    // Suscriptor al mapa del stitching (cubre todo el laberinto desde el inicio)
     map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-      "/map", custom_qos, std::bind(&RRTRosNode::map_callback, this, std::placeholders::_1));
+      "/map_dron", custom_qos, std::bind(&RRTRosNode::map_callback, this, std::placeholders::_1));
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -117,41 +139,61 @@ public:
   }
 
   void map_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
-    // Guardar metadatos del mapa para conversiones
-    map_resolution_ = msg->info.resolution;
-    map_origin_x_ = msg->info.origin.position.x;
-    map_origin_y_ = msg->info.origin.position.y;
-    map_height_ = msg->info.height;
+    int w_in = msg->info.width;
+    int h_in = msg->info.height;
+    double res_in = msg->info.resolution;
 
-    RCLCPP_INFO(this->get_logger(), "Mapa recibido: %ux%u @ %.3f m/px, origen (%.2f, %.2f)",
-      msg->info.width, msg->info.height, map_resolution_, map_origin_x_, map_origin_y_);
-    
-    int w = msg->info.width;
-    int h = msg->info.height;
-    Mat temp_map(h, w, CV_8UC1);
+    RCLCPP_INFO(this->get_logger(), "Mapa recibido: %dx%d @ %.4f m/px, origen (%.2f, %.2f)",
+      w_in, h_in, res_in, msg->info.origin.position.x, msg->info.origin.position.y);
 
-    for (int i = 0; i < h * w; i++) {
+    Mat temp_map(h_in, w_in, CV_8UC1);
+    for (int i = 0; i < h_in * w_in; i++) {
         int8_t val = msg->data[i];
         if (val >= 0 && val <= 30) temp_map.data[i] = 255;   // Libre
         else if (val > 60) temp_map.data[i] = 0;             // Ocupado
         else temp_map.data[i] = 128;                         // Desconocido
     }
 
-    flip(temp_map, map_original_, 0);
+    // El mapa stitched viene a alta resolucion (~0.002 m/px). Downsamplear
+    // a planning_resolution_m_ para que el RRT corra rapido sin sacrificar
+    // seguridad (la erosion por robot_radius compensa la perdida de detalle).
+    double target_res = this->get_parameter_or("planning_resolution_m", 0.05);
+    int downsample_factor = max(1, static_cast<int>(round(target_res / res_in)));
+    int w_out = max(1, w_in / downsample_factor);
+    int h_out = max(1, h_in / downsample_factor);
+
+    Mat full_res;
+    flip(temp_map, full_res, 0);
+
+    Mat downsampled;
+    if (downsample_factor > 1) {
+      // INTER_AREA da promedio ponderado; los obstaculos quedan oscurecidos
+      // proporcional a su cobertura del bloque. La erosion posterior los expande.
+      resize(full_res, downsampled, Size(w_out, h_out), 0, 0, INTER_AREA);
+      map_resolution_ = res_in * downsample_factor;
+    } else {
+      downsampled = full_res;
+      map_resolution_ = res_in;
+    }
+    map_original_ = downsampled;
+    map_origin_x_ = msg->info.origin.position.x;
+    map_origin_y_ = msg->info.origin.position.y;
+    map_height_ = h_out;
 
     // Radio del robot en pixels (parametrizado desde el launch)
     double robot_radius_m = this->get_parameter_or("robot_radius_m", 0.19);
-    int robot_radius = static_cast<int>(ceil(robot_radius_m / map_resolution_));
+    int robot_radius = max(1, static_cast<int>(ceil(robot_radius_m / map_resolution_)));
     Mat kernel = getStructuringElement(MORPH_RECT, Size(robot_radius * 2, robot_radius * 2));
     erode(map_original_, map_inflated_, kernel);
-    
-    // Mapa relajado (1/4 de las medidas originales)
+
+    // Mapa relajado (1/4 del radio original) para fallback en zonas estrechas.
     int relaxed_radius = max(1, static_cast<int>(ceil((robot_radius_m / 4.0) / map_resolution_)));
     Mat kernel_relaxed = getStructuringElement(MORPH_RECT, Size(relaxed_radius * 2, relaxed_radius * 2));
     erode(map_original_, map_relaxed_, kernel_relaxed);
-    
+
     map_loaded_ = true;
-    RCLCPP_INFO(this->get_logger(), "Mapa dinámico (SLAM) inflado (radio=%d px = %.2f m).", robot_radius, robot_radius_m);
+    RCLCPP_INFO(this->get_logger(), "Mapa stitched downsampleado a %dx%d @ %.3f m/px (factor=%d). Inflado radio=%d px = %.2f m.",
+      w_out, h_out, map_resolution_, downsample_factor, robot_radius, robot_radius_m);
   }
 
   void publishPath(const vector<Point>& cv_path, double theta_goal = 0.0) {
@@ -159,26 +201,42 @@ public:
     ros_path.header.stamp = this->get_clock()->now();
     ros_path.header.frame_id = "map";
 
+    // El RRT planifica en pixel-space del mapa stitched (frame map_dron_origin).
+    // control_trayectoria.py espera el Path en frame `map` (SLAM), asi que
+    // transformamos cada waypoint usando la TF estatica map <- map_dron_origin.
+    geometry_msgs::msg::TransformStamped tf_map_from_dron;
+    try {
+      tf_map_from_dron = tf_buffer_->lookupTransform("map", "map_dron_origin", tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_ERROR(this->get_logger(), "No se pudo obtener TF map<-map_dron_origin: %s", ex.what());
+      return;
+    }
+
     for (size_t i = 0; i < cv_path.size(); i++) {
-      geometry_msgs::msg::PoseStamped pose;
       double x_m, y_m;
       pixel_to_world(cv_path[i], x_m, y_m);
 
-      pose.pose.position.x = x_m;
-      pose.pose.position.y = y_m;
-      pose.pose.position.z = 0.0;
+      geometry_msgs::msg::PoseStamped pose_in_dron;
+      pose_in_dron.header.frame_id = "map_dron_origin";
+      pose_in_dron.header.stamp = ros_path.header.stamp;
+      pose_in_dron.pose.position.x = x_m;
+      pose_in_dron.pose.position.y = y_m;
+      pose_in_dron.pose.position.z = 0.0;
 
-      // Incluir orientacion objetivo en el ultimo punto
       if (i == cv_path.size() - 1) {
         tf2::Quaternion q_goal;
         q_goal.setRPY(0, 0, theta_goal);
-        pose.pose.orientation.x = q_goal.x();
-        pose.pose.orientation.y = q_goal.y();
-        pose.pose.orientation.z = q_goal.z();
-        pose.pose.orientation.w = q_goal.w();
+        pose_in_dron.pose.orientation.x = q_goal.x();
+        pose_in_dron.pose.orientation.y = q_goal.y();
+        pose_in_dron.pose.orientation.z = q_goal.z();
+        pose_in_dron.pose.orientation.w = q_goal.w();
+      } else {
+        pose_in_dron.pose.orientation.w = 1.0;
       }
 
-      ros_path.poses.push_back(pose);
+      geometry_msgs::msg::PoseStamped pose_in_map;
+      tf2::doTransform(pose_in_dron, pose_in_map, tf_map_from_dron);
+      ros_path.poses.push_back(pose_in_map);
     }
 
     path_pub_->publish(ros_path);
@@ -217,32 +275,33 @@ private:
   bool do_planning() {
     if (!map_loaded_) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-          "Esperando mapa en el tópico /map...");
+          "Esperando mapa en el tópico /map_dron...");
         return false;
     }
 
     geometry_msgs::msg::TransformStamped start_tf;
     geometry_msgs::msg::TransformStamped goal_tf;
 
+    // TFs en frame map_dron_origin: la TF estatica map -> map_dron_origin
+    // (publicada por publicador_tfs_arucos) hace que tf2 encadene desde
+    // base_footprint/carrito_aruco/meta_aruco hasta el frame del mapa stitched.
     try {
-      // Intentar obtener la TF dinámica del robot primero
-      start_tf = tf_buffer_->lookupTransform("map", "base_footprint", tf2::TimePointZero);
+      start_tf = tf_buffer_->lookupTransform("map_dron_origin", "base_footprint", tf2::TimePointZero);
     } catch (const tf2::TransformException & ex) {
       try {
-        // Fallback a la snapshot estática del drone
-        start_tf = tf_buffer_->lookupTransform("map", "carrito_aruco", tf2::TimePointZero);
+        start_tf = tf_buffer_->lookupTransform("map_dron_origin", "carrito_aruco", tf2::TimePointZero);
       } catch (const tf2::TransformException & ex2) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-          "Esperando la TF del carrito...");
+          "Esperando la TF del carrito (frame map_dron_origin)...");
         return false;
       }
     }
 
     try {
-      goal_tf = tf_buffer_->lookupTransform("map", "meta_aruco", tf2::TimePointZero);
+      goal_tf = tf_buffer_->lookupTransform("map_dron_origin", "meta_aruco", tf2::TimePointZero);
     } catch (const tf2::TransformException & ex) {
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-        "Esperando la TF de meta_aruco...");
+        "Esperando la TF de meta_aruco (frame map_dron_origin)...");
       return false;
     }
 
@@ -306,12 +365,14 @@ private:
     // Verificar que la meta no esta en colision
     bool goal_coll = check_collision(working_map, goal, goal);
     if (goal_coll) {
-      if (!is_relaxed) {
-        RCLCPP_WARN(this->get_logger(), "Error de colision en la META (mapa inflado).");
+      Point new_goal = get_nearest_free_point(working_map, goal, 30);
+      if (new_goal == goal) {
+          RCLCPP_WARN(this->get_logger(), "META en colision y no se encontro espacio libre cercano.");
+          return false;
       } else {
-        RCLCPP_ERROR(this->get_logger(), "Error de colision en la META incluso con mapa relajado.");
+          RCLCPP_WARN(this->get_logger(), "META en colision (drift de mapa). Ajustando meta a un punto libre cercano.");
+          goal = new_goal;
       }
-      return false;
     }
 
     vector<RRTNode> tree;

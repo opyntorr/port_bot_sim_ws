@@ -18,7 +18,8 @@ Diferencias vs simulacion.launch.py:
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, TimerAction, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import Command
 from launch_ros.parameter_descriptions import ParameterValue
@@ -161,7 +162,9 @@ def generate_launch_description():
     # ARTEFACTOS DE LA CORRIDA ANTERIOR (MISION DRON)
     # =========================================================
 
-    # Servidor de Mapas (Nav2) para publicar el mapa estático del dron (stitching)
+    # Servidor de Mapas (Nav2) para publicar el mapa estático del dron (stitching).
+    # frame_id='map_dron_origin' lo conecta a `map` (SLAM) via TF estatica
+    # publicada por publicador_tfs_arucos.
     map_server_node = Node(
         package='nav2_map_server',
         executable='map_server',
@@ -169,7 +172,8 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'yaml_filename': mapa_yaml,
-            'use_sim_time': True
+            'use_sim_time': True,
+            'frame_id': 'map_dron_origin',
         }],
         remappings=[('/map', '/map_dron')]  # Publicar en /map_dron para visualización pura
     )
@@ -198,28 +202,25 @@ def generate_launch_description():
         ],
     )
 
-    # SLAM Toolbox oficial (Reemplaza a slam_occupancy_grid y amcl_localizer)
-    # Realiza SLAM en tiempo real y publica tanto el /map como la TF map -> odom
-    slam_toolbox_node = Node(
-        package='slam_toolbox',
-        executable='async_slam_toolbox_node',
-        name='slam_toolbox',
-        output='screen',
-        parameters=[{
-            'use_sim_time': True,
-            'odom_frame': 'odom',
-            'base_frame': 'base_footprint',
-            'map_frame': 'map',
-            'scan_topic': '/scan_filtered',
-            'mode': 'mapping',
-            'resolution': 0.05,
-            'max_laser_range': 5.0,
-            'transform_publish_period': 0.05,  # 20 Hz para TF suave
-            'map_update_interval': 1.0,
-            'minimum_time_interval': 0.1,
-            'transform_timeout': 0.2,
-            'tf_buffer_duration': 1.0,
-        }],
+    # SLAM Toolbox oficial - usa online_async_launch.py con yaml dedicado
+    # (patron tomado de dinav2/warehouse_bot, mantiene scan_topic=/scan_filtered).
+    # Envuelto en TimerAction(5s) para dar margen a LiDAR/odom antes del primer scan.
+    slam_toolbox_launch = TimerAction(
+        period=5.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(
+                        get_package_share_directory('slam_toolbox'),
+                        'launch', 'online_async_launch.py'
+                    )
+                ),
+                launch_arguments={
+                    'slam_params_file': os.path.join(pkg_sim, 'config', 'mapper_params_online_async.yaml'),
+                    'use_sim_time': 'true',
+                }.items(),
+            )
+        ],
     )
 
     planificador_rrt_node = Node(
@@ -297,7 +298,7 @@ def generate_launch_description():
         map_server_node,
         lifecycle_manager_node,
         publicador_tfs_node,
-        slam_toolbox_node,
+        slam_toolbox_launch,
         planificador_rrt_node,
         rosbridge_server,
         foxglove_bridge_node,

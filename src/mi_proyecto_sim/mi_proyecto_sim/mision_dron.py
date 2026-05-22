@@ -18,7 +18,7 @@ import numpy as np
 import rclpy
 import yaml
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import Point, PoseStamped, TransformStamped
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -74,6 +74,7 @@ MAPS_DIR = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'maps'
 class MisionDron(Node):
     def __init__(self):
         super().__init__('mision_dron')
+        self.get_logger().info('=== INICIANDO MISION DRON (VERSION CON FALLBACK FIX Y DEBUG) ===')
 
         self.declare_parameter('use_real_drone', False)
         self.declare_parameter('camera_topic', '')
@@ -114,7 +115,32 @@ class MisionDron(Node):
         if self.real:
             self.create_subscription(PoseStamped, optitrack_topic, self._optitrack_cb, qos_be)
         self.target_pub = self.create_publisher(Point, '/drone1/target_position', 10)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/drone1/cmd_vel', 10)
+        self.emergency_pub = self.create_publisher(Empty, '/emergency', 1)
         self.static_tf = StaticTransformBroadcaster(self)
+
+        # Inicializar parametros de camara y detector ArUco para Visual Servoing
+        camera_yaml = WS_ROOT / 'src' / 'mi_proyecto_sim' / 'config' / ('camera_tello.yaml' if self.real else 'camera_tello_sim.yaml')
+        with open(camera_yaml, 'r') as f:
+            cam_data = yaml.safe_load(f)
+        self.K = np.array(cam_data['camera_matrix']['data'], dtype=np.float64).reshape(3, 3)
+        self.D = np.array(cam_data['distortion_coefficients']['data'], dtype=np.float64).flatten()
+        self.w_cam = int(cam_data['image_width'])
+        self.h_cam = int(cam_data['image_height'])
+        self.newK, _ = cv2.getOptimalNewCameraMatrix(self.K, self.D, (self.w_cam, self.h_cam), alpha=0.0)
+
+        try:
+            self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
+            self.aruco_detector = None
+        except AttributeError:
+            self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+            self.aruco_params = cv2.aruco.DetectorParameters()
+            self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+
+        self.REST_ARUCO_ID = 1
+        self.REST_ARUCO_NOMINAL_X = 0.0
+        self.REST_ARUCO_NOMINAL_Y = -1.4
 
         # Takeoff/land: servicio TelloAction (sim) o topics Empty (real)
         if self.real:
@@ -197,6 +223,18 @@ class MisionDron(Node):
         if now == 0:
             return
 
+        # Fallback de 20 segundos despues de terminar los waypoints
+        if hasattr(self, 'last_wp_time') and self.state not in ['LAND', 'POSTPROCESS', 'DONE']:
+            if (now - self.last_wp_time) > 20.0:
+                self.get_logger().warn(f'Han pasado 20 segundos desde el ultimo WP. Estado actual: {self.state}. Forzando aterrizaje!')
+                self.state = 'LAND'
+                self.land_called = False
+                self.land_t = now
+                
+                self.emergency_pub.publish(Empty())  # Apaga el PID para que no evite el aterrizaje
+                self.cmd_vel_pub.publish(Twist())
+                return
+
         if self.state == 'INIT':
             if self.latest_image is None or self.current_pose is None:
                 return
@@ -234,10 +272,25 @@ class MisionDron(Node):
                     self.settle_start = None
                     self.wp_index += 1
                     if self.wp_index >= len(WAYPOINTS):
-                        self.get_logger().info('Todos los waypoints completados.')
-                        self.state = 'LAND'
-                        self.land_called = False
-                        self.land_t = now
+                        self.get_logger().info('Todos los waypoints completados. Procesando fotos para encontrar el ArUco de reposo...')
+                        self.last_wp_time = now
+                        
+                        # Buscar el ArUco de reposo en las fotos tomadas
+                        detections = self._detect_aruco_positions_from_photos()
+                        aruco_name = f'aruco_{self.REST_ARUCO_ID}'
+                        
+                        if aruco_name in detections:
+                            self.REST_ARUCO_NOMINAL_X = detections[aruco_name]['world_x']
+                            self.REST_ARUCO_NOMINAL_Y = detections[aruco_name]['world_y']
+                            self.get_logger().info(f"ArUco de reposo encontrado en fotos: ({self.REST_ARUCO_NOMINAL_X:.2f}, {self.REST_ARUCO_NOMINAL_Y:.2f})")
+                            self.state = 'GOTO_REST_ARUCO'
+                            self.servo_substate = 'CENTERING'
+                            self.settle_start = None
+                        else:
+                            self.get_logger().warn("ArUco de reposo NO encontrado en fotos. Pasando directo a busqueda visual (20s max).")
+                            self.state = 'VISUAL_SERVO'
+                            self.servo_substate = 'CENTERING'
+                            self.emergency_pub.publish(Empty())
                     else:
                         self.get_logger().info(
                             f'Avanzando a WP{self.wp_index}: '
@@ -251,9 +304,132 @@ class MisionDron(Node):
                 self.settle_start = None
             return
 
+        if self.state == 'GOTO_REST_ARUCO':
+            self._publish_target(self.REST_ARUCO_NOMINAL_X, self.REST_ARUCO_NOMINAL_Y, _Z)
+            dist = self._distance_to(self.REST_ARUCO_NOMINAL_X, self.REST_ARUCO_NOMINAL_Y, _Z)
+            self.get_logger().info(f'[DEBUG] GOTO_REST_ARUCO: dist={dist:.3f}, settle={self.settle_start}', throttle_duration_sec=0.5)
+            if dist < POS_TOL:
+                if self.settle_start is None:
+                    self.settle_start = now
+                elif (now - self.settle_start) > 0.5:  # Transicion rapida al servo visual
+                    self.get_logger().info('Cerca del Aruco de reposo. Desactivando PID e iniciando control visual...')
+                    self.emergency_pub.publish(Empty())  # Apaga el position_controller
+                    self.state = 'VISUAL_SERVO'
+            else:
+                # Si se sale del radio de tolerancia, resetear settle_start para que deba volver a estabilizarse
+                if self.settle_start is not None:
+                    self.get_logger().info(f'[DEBUG] Settle reset en GOTO_REST_ARUCO porque dist={dist:.3f} >= POS_TOL')
+                self.settle_start = None
+            return
+
+        if self.state == 'VISUAL_SERVO':
+            if self.latest_image is None:
+                return
+            
+            # Decodificar imagen para el servo
+            m = self.latest_image
+            img = np.frombuffer(m.data, dtype=np.uint8).reshape(m.height, m.width, -1)
+            if m.encoding in ('mono8', 'MONO8'):
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            
+            img_undist = cv2.undistort(img, self.K, self.D, None, self.newK)
+            
+            if self.aruco_detector is not None:
+                corners, ids, _ = self.aruco_detector.detectMarkers(img_undist)
+            else:
+                corners, ids, _ = cv2.aruco.detectMarkers(img_undist, self.aruco_dict, parameters=self.aruco_params)
+            
+            twist = Twist()
+            aruco_found = False
+            
+            if ids is not None:
+                ids_flat = ids.flatten().tolist()
+                if self.REST_ARUCO_ID in ids_flat:
+                    idx = ids_flat.index(self.REST_ARUCO_ID)
+                    pts = corners[idx][0]
+                    cx = np.mean(pts[:, 0])
+                    cy = np.mean(pts[:, 1])
+                    
+                    # Error en pixeles respecto al centro
+                    err_x = cx - self.w_cam / 2.0
+                    err_y = cy - self.h_cam / 2.0
+                    
+                    # Error de orientacion
+                    dx = pts[1][0] - pts[0][0]
+                    dy = pts[1][1] - pts[0][1]
+                    yaw_img = math.atan2(dy, dx)
+                    
+                    kp_xy = 0.002
+                    kp_yaw = 0.6
+                    
+                    cmd_x = -err_y * kp_xy
+                    cmd_y = -err_x * kp_xy 
+                    err_yaw = -yaw_img 
+                    
+                    cmd_yaw = err_yaw * kp_yaw
+                    
+                    max_xy = 0.2
+                    max_yaw = 0.5
+                    dist_pix = math.hypot(err_x, err_y)
+                    
+                    if self.servo_substate == 'CENTERING':
+                        # Fase 1: Centrar XY y bajar a 25 cm (0.25m) SIN rotar
+                        twist.linear.x = max(min(cmd_x, max_xy), -max_xy)
+                        twist.linear.y = max(min(cmd_y, max_xy), -max_xy)
+                        twist.angular.z = 0.0
+                        
+                        target_z = 0.35  # Aproximadamente 15-20cm sobre el ArUco
+                        if self.current_pose[2] > target_z + 0.1:
+                            twist.linear.z = -0.15
+                        elif self.current_pose[2] < target_z - 0.1:
+                            twist.linear.z = 0.15
+                        else:
+                            twist.linear.z = 0.0
+                            
+                        self.get_logger().info(f'[Fase 1] Centrando: err_xy={dist_pix:.1f}px, Z={self.current_pose[2]:.2f}m', throttle_duration_sec=0.5)
+                        
+                        if dist_pix < 25 and abs(self.current_pose[2] - target_z) < 0.15:
+                            self.get_logger().info('Centrado en XY. Pasando a rotacion (YAW).')
+                            self.servo_substate = 'YAWING'
+                            
+                    elif self.servo_substate == 'YAWING':
+                        # Fase 2: Mantener posicion XY y rotar para igualar orientacion
+                        twist.linear.x = max(min(cmd_x, max_xy*0.5), -max_xy*0.5)
+                        twist.linear.y = max(min(cmd_y, max_xy*0.5), -max_xy*0.5)
+                        twist.angular.z = max(min(cmd_yaw, max_yaw), -max_yaw)
+                        
+                        # Mantener altura
+                        target_z = 0.35
+                        if self.current_pose[2] > target_z + 0.05:
+                            twist.linear.z = -0.1
+                        elif self.current_pose[2] < target_z - 0.05:
+                            twist.linear.z = 0.1
+                        else:
+                            twist.linear.z = 0.0
+                            
+                        self.get_logger().info(f'[Fase 2] Rotando: err_yaw={math.degrees(err_yaw):.1f}deg', throttle_duration_sec=0.5)
+                        
+                        if abs(err_yaw) < math.radians(5) and dist_pix < 30:
+                            self.get_logger().info('Perfectamente alineado. Aterrizando!')
+                            self.state = 'LAND'
+                            self.land_called = False
+                            self.land_t = now
+                            self.cmd_vel_pub.publish(Twist())
+                            return
+                    
+                    aruco_found = True
+            
+            if not aruco_found:
+                self.get_logger().info('ArUco 1 no visible, bajando y buscando...', throttle_duration_sec=1.0)
+                twist.linear.z = -0.15  # Bajar buscando
+                twist.angular.z = 0.0   # No girar para no marear
+                
+            self.cmd_vel_pub.publish(twist)
+            return
+
         if self.state == 'LAND':
             if not self.land_called:
-                self.get_logger().info('Aterrizando en el ultimo WP...')
+                self.get_logger().info('Ejecutando comando land...')
                 self._call_action('land')
                 self.land_called = True
                 self.land_t = now
@@ -573,26 +749,31 @@ class MisionDron(Node):
             
         return best_detections
 
-    def _publish_aruco_tfs(self, cart_meta):
-        transforms = []
-        for name, data in cart_meta.items():
-            t = TransformStamped()
-            t.header.stamp = self.get_clock().now().to_msg()
-            t.header.frame_id = 'map'
-            t.child_frame_id = f'{name}_aruco'
-            t.transform.translation.x = data['world_x']
-            t.transform.translation.y = data['world_y']
-            t.transform.translation.z = 0.0
-            
-            yaw = data['yaw_world']
-            sy = math.sin(yaw * 0.5)
-            cy_q = math.cos(yaw * 0.5)
-            t.transform.rotation.x = 0.0
-            t.transform.rotation.y = 0.0
-            t.transform.rotation.z = float(sy)
-            t.transform.rotation.w = float(cy_q)
-            transforms.append(t)
-        self.static_tf.sendTransform(transforms)
+    # OBSOLETO: publicaba ArUcos en frame `map` directamente con coords absolutas
+    # del stitching, lo cual chocaba con el frame `map` de slam_toolbox (que esta
+    # anclado al carrito). publicador_tfs_arucos ahora hace la transformacion al
+    # frame del carrito y publica todas las TFs estaticas. No re-habilitar este
+    # metodo sin coordinar con publicador_tfs_arucos.
+    # def _publish_aruco_tfs(self, cart_meta):
+    #     transforms = []
+    #     for name, data in cart_meta.items():
+    #         t = TransformStamped()
+    #         t.header.stamp = self.get_clock().now().to_msg()
+    #         t.header.frame_id = 'map'
+    #         t.child_frame_id = f'{name}_aruco'
+    #         t.transform.translation.x = data['world_x']
+    #         t.transform.translation.y = data['world_y']
+    #         t.transform.translation.z = 0.0
+    #
+    #         yaw = data['yaw_world']
+    #         sy = math.sin(yaw * 0.5)
+    #         cy_q = math.cos(yaw * 0.5)
+    #         t.transform.rotation.x = 0.0
+    #         t.transform.rotation.y = 0.0
+    #         t.transform.rotation.z = float(sy)
+    #         t.transform.rotation.w = float(cy_q)
+    #         transforms.append(t)
+    #     self.static_tf.sendTransform(transforms)
 
 
 def main(args=None):
