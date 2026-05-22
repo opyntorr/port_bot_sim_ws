@@ -396,16 +396,27 @@ private:
     double theta_goal = -y_goal;
     ros_yaw_goal_ = y_goal;  // Guardar yaw original ROS para publicar en el Path
 
-    // Bucle de intentos
+    // Bucle de intentos alternando: 3 NORMAL -> 3 RELAJADO -> 3 NORMAL -> 3 RELAJADO ...
+    // hasta encontrar ruta. Cap de seguridad para no bloquear el nodo indefinidamente.
+    const int max_ciclos = 10;
     bool success = false;
-    for (int i = 0; i < 3; i++) {
-        success = compute_rrt(start, theta_start, goal, theta_goal, map_inflated_, false);
-        if (success) break;
+    for (int ciclo = 0; ciclo < max_ciclos && !success; ciclo++) {
+        bool usar_relajado = (ciclo % 2 == 1);
+        const Mat& mapa = usar_relajado ? map_relaxed_ : map_inflated_;
+        const char* etiqueta = usar_relajado ? "RELAJADO" : "NORMAL";
+        if (ciclo > 0) {
+            RCLCPP_WARN(this->get_logger(),
+                "Ciclo %d: fallaron los 3 intentos previos. Probando 3 veces en modo %s...",
+                ciclo + 1, etiqueta);
+        }
+        for (int i = 0; i < 3 && !success; i++) {
+            success = compute_rrt(start, theta_start, goal, theta_goal, mapa, usar_relajado);
+        }
     }
 
     if (!success) {
-        RCLCPP_WARN(this->get_logger(), "Fallo tras 3 intentos en mapa inflado. Iniciando modo RELAJADO (1/4 de la medida original)...");
-        success = compute_rrt(start, theta_start, goal, theta_goal, map_relaxed_, true);
+        RCLCPP_ERROR(this->get_logger(),
+            "Agotados %d ciclos (NORMAL/RELAJADO). No se encontro ruta.", max_ciclos);
     }
 
     return success;

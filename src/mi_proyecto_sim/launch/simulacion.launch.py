@@ -1,16 +1,27 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler, TimerAction, IncludeLaunchDescription
+from launch.actions import ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable, RegisterEventHandler, TimerAction, IncludeLaunchDescription, DeclareLaunchArgument
+from launch.conditions import LaunchConfigurationEquals
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
-from launch.substitutions import Command
+from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.parameter_descriptions import ParameterFile
 
 def generate_launch_description():
     pkg_sim = get_package_share_directory('mi_proyecto_sim')
+
+    # Backend de SLAM: 'slam_toolbox' (default, comportamiento original) o
+    # 'cartographer' (Cartographer en localization mode con prior del dron).
+    slam_backend_arg = DeclareLaunchArgument(
+        'slam_backend',
+        default_value='slam_toolbox',
+        choices=['slam_toolbox', 'cartographer'],
+        description='Backend de SLAM a usar')
+    is_slam_toolbox = LaunchConfigurationEquals('slam_backend', 'slam_toolbox')
+    is_cartographer = LaunchConfigurationEquals('slam_backend', 'cartographer')
     # Derivar la raíz del workspace: install/mi_proyecto_sim/share/mi_proyecto_sim -> 4 niveles arriba
     ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
     maps_dir = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps')
@@ -251,6 +262,21 @@ def generate_launch_description():
             'slam_params_file': os.path.join(pkg_sim, 'config', 'mapper_params_online_async.yaml'),
             'use_sim_time': 'true',
         }.items(),
+        condition=is_slam_toolbox,
+    )
+
+    # Cartographer en localization mode con prior congelado del PGM del dron.
+    # Incluye su propio publicador_tfs_arucos en modo carto_frozen_prior y un
+    # relay /map -> /map_dron para que el planner siga viendo el mapa.
+    cartographer_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(pkg_sim, 'launch', 'cartographer.launch.py')
+        ),
+        launch_arguments={
+            'pbstream_file': os.path.join(maps_dir, 'mapa_mision.pbstream'),
+            'use_sim_time': 'true',
+        }.items(),
+        condition=is_cartographer,
     )# Nodo de Planificación de Ruta
     # planificador_node = Node(
     #     package='mi_proyecto_sim',
@@ -342,13 +368,16 @@ def generate_launch_description():
         }]
     )
 
-    # Nodo que publica TFs estaticas de ArUcos (lee arucos.yaml generado por mision_dron)
+    # Nodo que publica TFs estaticas de ArUcos (lee arucos.yaml generado por mision_dron).
+    # Solo activo con slam_toolbox: cartographer.launch.py lanza su propia instancia
+    # en modo carto_frozen_prior.
     publicador_tfs_node = Node(
         package='mi_proyecto_sim',
         executable='publicador_tfs_arucos.py',
         name='publicador_tfs_arucos',
         output='screen',
         parameters=[{'use_sim_time': True}],
+        condition=is_slam_toolbox,
     )
 
     # =========================================================
@@ -390,15 +419,33 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Event handler: cuando mision_dron termina, lanzar SLAM + TF publisher + RRT
-    rrt_y_slam_handler = RegisterEventHandler(
+    convertir_mapa = ExecuteProcess(
+        cmd=['python3', os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'tools', 'pgm_to_pbstream.py'),
+             '--pgm', mapa_pgm,
+             '--yaml', mapa_yaml,
+             '--out', os.path.join(maps_dir, 'mapa_mision.pbstream')],
+        output='screen'
+    )
+
+    handler_mision = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=mision_dron_node,
+            on_exit=[convertir_mapa]
+        )
+    )
+
+    # Event handler: cuando la conversion termina, lanzar SLAM + TF publisher + RRT.
+    # slam_toolbox_launch, cartographer_launch, y publicador_tfs_node se filtran
+    # automaticamente por su condition (solo arranca el que corresponde al backend).
+    rrt_y_slam_handler = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=convertir_mapa,
             on_exit=[
                 map_server_node,
                 lifecycle_manager_node,
                 publicador_tfs_node,
                 slam_toolbox_launch,
+                cartographer_launch,
                 planificador_rrt_node
             ]
         )
@@ -422,6 +469,7 @@ def generate_launch_description():
 
     # Empaquetar y lanzar todo simultaneamente
     return LaunchDescription([
+        slam_backend_arg,
         limpiar_artefactos,
         set_env,
         plugin_env,
@@ -444,6 +492,7 @@ def generate_launch_description():
         pid_controller,
         plotter,
         mision,
+        handler_mision,
         rrt_y_slam_handler,
         rosbridge_server,
         foxglove_bridge_node,

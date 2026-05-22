@@ -346,9 +346,18 @@ class ControlTrayectoria(Node):
             self.last_advance_time = now
             self.last_log_time = now
             self._clock_initialized = True
-            self.get_logger().info('Reloj de simulación válido. Control listo.')
+            self.get_logger().info('Reloj de simulación válido. Control listo. Esperando ruta...')
         
-        if not self.path_points or self.ruta_completada:
+        now = self.get_clock().now()
+
+        if not self.path_points:
+            # Si pasaron mas de 3 segundos y no hay ruta, solicitarla
+            if (now - self.start_time).nanoseconds / 1e9 > 3.0:
+                self.get_logger().info('No se ha recibido la ruta inicial. Solicitando al planificador...', throttle_duration_sec=3.0)
+                self.replan_pub.publish(Empty())
+            return
+            
+        if self.ruta_completada:
             return
             
         x, y, theta = self.get_current_pose()
