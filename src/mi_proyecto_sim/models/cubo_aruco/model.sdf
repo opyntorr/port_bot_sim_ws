@@ -11,7 +11,7 @@
         <geometry><box><size>0.2 0.2 0.001</size></box></geometry>
         <material>
           <diffuse>1 1 1 1</diffuse>
-          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco5.png</albedo_map></metal></pbr>
+          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco0.png</albedo_map></metal></pbr>
         </material>
       </visual>
 
@@ -21,7 +21,7 @@
         <geometry><box><size>0.2 0.2 0.001</size></box></geometry>
         <material>
           <diffuse>1 1 1 1</diffuse>
-          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco5.png</albedo_map></metal></pbr>
+          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco0.png</albedo_map></metal></pbr>
         </material>
       </visual>
 
@@ -31,7 +31,7 @@
         <geometry><box><size>0.2 0.2 0.001</size></box></geometry>
         <material>
           <diffuse>1 1 1 1</diffuse>
-          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco5.png</albedo_map></metal></pbr>
+          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco0.png</albedo_map></metal></pbr>
         </material>
       </visual>
 
@@ -41,7 +41,7 @@
         <geometry><box><size>0.2 0.2 0.001</size></box></geometry>
         <material>
           <diffuse>1 1 1 1</diffuse>
-          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco5.png</albedo_map></metal></pbr>
+          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco0.png</albedo_map></metal></pbr>
         </material>
       </visual>
 
@@ -51,7 +51,7 @@
         <geometry><box><size>0.2 0.2 0.001</size></box></geometry>
         <material>
           <diffuse>1 1 1 1</diffuse>
-          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco5.png</albedo_map></metal></pbr>
+          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco0.png</albedo_map></metal></pbr>
         </material>
       </visual>
 
@@ -61,7 +61,7 @@
         <geometry><box><size>0.2 0.2 0.001</size></box></geometry>
         <material>
           <diffuse>1 1 1 1</diffuse>
-          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco5.png</albedo_map></metal></pbr>
+          <pbr><metal><albedo_map>../marcador_aruco/materials/textures/aruco0.png</albedo_map></metal></pbr>
         </material>
       </visual>
 

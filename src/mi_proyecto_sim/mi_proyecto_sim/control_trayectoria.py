@@ -169,8 +169,8 @@ class ControlTrayectoria(Node):
             
         self.img_w = cv_image.shape[1]
         
-        if ids is not None and 5 in ids: # Suponiendo que el cubo usa el ID 5 (meta)
-            idx = list(ids.flatten()).index(5)
+        if ids is not None and 0 in ids: # El cubo meta usa el ID 0
+            idx = list(ids.flatten()).index(0)
             esquinas = corners[idx][0]
             # Centroide del ArUco
             self.marker_cx = np.mean(esquinas[:, 0])

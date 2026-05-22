@@ -97,12 +97,6 @@
     </include> -->
 
     <include>
-      <name>aruco_0</name>
-      <uri>file://marcador_aruco/marcador_aruco0.sdf</uri>
-      <pose>1.2 1.2 0.06 0 0 -1.5708</pose>
-    </include>
-
-    <include>
       <name>aruco_1</name>
       <uri>file://marcador_aruco/marcador_aruco1.sdf</uri>
       <pose>0.0 -1.4 0.06 0 0 -1.5708</pose>
@@ -121,13 +115,13 @@
       <uri>file://marcador_aruco/marcador_aruco3.sdf</uri>
       <pose>-2.2 2.2 0.01 0 0 -1.5708</pose>
     </include>
+    -->
 
     <include>
-      <name>aruco_5</name>
-      <uri>file://marcador_aruco/marcador_aruco5.sdf</uri>
-      <pose>1.4 -1.2 0.06 0 0 -1.5708</pose>
+      <name>cubo_meta</name>
+      <uri>file://cubo_aruco</uri>
+      <pose>1.2 1.2 0.06 0 0 0</pose>
     </include>
-    -->
 
     <include>
       <uri>model://skydome</uri>
