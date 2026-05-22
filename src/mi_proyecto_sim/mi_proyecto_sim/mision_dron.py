@@ -354,68 +354,36 @@ class MisionDron(Node):
                     err_x = cx - self.w_cam / 2.0
                     err_y = cy - self.h_cam / 2.0
                     
-                    # Error de orientacion
-                    dx = pts[1][0] - pts[0][0]
-                    dy = pts[1][1] - pts[0][1]
-                    yaw_img = math.atan2(dy, dx)
-                    
                     kp_xy = 0.002
-                    kp_yaw = 0.6
                     
                     cmd_x = -err_y * kp_xy
                     cmd_y = -err_x * kp_xy 
-                    err_yaw = -yaw_img 
-                    
-                    cmd_yaw = err_yaw * kp_yaw
                     
                     max_xy = 0.2
-                    max_yaw = 0.5
                     dist_pix = math.hypot(err_x, err_y)
                     
-                    if self.servo_substate == 'CENTERING':
-                        # Fase 1: Centrar XY y bajar a 25 cm (0.25m) SIN rotar
-                        twist.linear.x = max(min(cmd_x, max_xy), -max_xy)
-                        twist.linear.y = max(min(cmd_y, max_xy), -max_xy)
-                        twist.angular.z = 0.0
+                    # Centrar XY y bajar a la altura objetivo SIN rotar
+                    twist.linear.x = max(min(cmd_x, max_xy), -max_xy)
+                    twist.linear.y = max(min(cmd_y, max_xy), -max_xy)
+                    twist.angular.z = 0.0
+                    
+                    target_z = 0.35  # Aproximadamente 15-20cm sobre el ArUco
+                    if self.current_pose[2] > target_z + 0.1:
+                        twist.linear.z = -0.15
+                    elif self.current_pose[2] < target_z - 0.1:
+                        twist.linear.z = 0.15
+                    else:
+                        twist.linear.z = 0.0
                         
-                        target_z = 0.35  # Aproximadamente 15-20cm sobre el ArUco
-                        if self.current_pose[2] > target_z + 0.1:
-                            twist.linear.z = -0.15
-                        elif self.current_pose[2] < target_z - 0.1:
-                            twist.linear.z = 0.15
-                        else:
-                            twist.linear.z = 0.0
-                            
-                        self.get_logger().info(f'[Fase 1] Centrando: err_xy={dist_pix:.1f}px, Z={self.current_pose[2]:.2f}m', throttle_duration_sec=0.5)
-                        
-                        if dist_pix < 25 and abs(self.current_pose[2] - target_z) < 0.15:
-                            self.get_logger().info('Centrado en XY. Pasando a rotacion (YAW).')
-                            self.servo_substate = 'YAWING'
-                            
-                    elif self.servo_substate == 'YAWING':
-                        # Fase 2: Mantener posicion XY y rotar para igualar orientacion
-                        twist.linear.x = max(min(cmd_x, max_xy*0.5), -max_xy*0.5)
-                        twist.linear.y = max(min(cmd_y, max_xy*0.5), -max_xy*0.5)
-                        twist.angular.z = max(min(cmd_yaw, max_yaw), -max_yaw)
-                        
-                        # Mantener altura
-                        target_z = 0.35
-                        if self.current_pose[2] > target_z + 0.05:
-                            twist.linear.z = -0.1
-                        elif self.current_pose[2] < target_z - 0.05:
-                            twist.linear.z = 0.1
-                        else:
-                            twist.linear.z = 0.0
-                            
-                        self.get_logger().info(f'[Fase 2] Rotando: err_yaw={math.degrees(err_yaw):.1f}deg', throttle_duration_sec=0.5)
-                        
-                        if abs(err_yaw) < math.radians(5) and dist_pix < 30:
-                            self.get_logger().info('Perfectamente alineado. Aterrizando!')
-                            self.state = 'LAND'
-                            self.land_called = False
-                            self.land_t = now
-                            self.cmd_vel_pub.publish(Twist())
-                            return
+                    self.get_logger().info(f'Centrando: err_xy={dist_pix:.1f}px, Z={self.current_pose[2]:.2f}m', throttle_duration_sec=0.5)
+                    
+                    if dist_pix < 25 and abs(self.current_pose[2] - target_z) < 0.15:
+                        self.get_logger().info('Centrado en XY. Aterrizando!')
+                        self.state = 'LAND'
+                        self.land_called = False
+                        self.land_t = now
+                        self.cmd_vel_pub.publish(Twist())
+                        return
                     
                     aruco_found = True
             
