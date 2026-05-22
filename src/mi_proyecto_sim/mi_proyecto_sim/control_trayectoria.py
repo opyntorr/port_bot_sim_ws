@@ -12,6 +12,9 @@ import tf2_ros
 import tf_transformations
 import math
 import numpy as np
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
 
 class ControlTrayectoria(Node):
     def __init__(self):
@@ -69,7 +72,8 @@ class ControlTrayectoria(Node):
         self.current_target_index = 0
         self.ruta_completada = False
         self.pure_rotation_mode = False
-        self.final_rotation_mode = False  # Fase de alineamiento final en la meta
+        self.visual_search_mode = False
+        self.visual_servo_mode = False
         self.goal_yaw = None  # Orientacion objetivo (se extrae del ultimo punto del Path)
         
         # Variables para replanificación automática (Watchdog)
@@ -107,6 +111,22 @@ class ControlTrayectoria(Node):
         )
         self.scan_sub = self.create_subscription(LaserScan, '/scan_filtered', self.scan_callback, qos_scan)
         
+        # Suscriptor a la camara del carrito
+        self.bridge = CvBridge()
+        self.cam_sub = self.create_subscription(Image, '/cam_1/image', self.cam_callback, 1)
+        self.marker_cx = None
+        self.marker_area = None
+        self.img_w = 640
+        
+        try:
+            self.aruco_dict = cv2.aruco.Dictionary_get(cv2.aruco.DICT_4X4_50)
+            self.aruco_params = cv2.aruco.DetectorParameters_create()
+            self.detector = None
+        except AttributeError:
+            self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+            self.aruco_params = cv2.aruco.DetectorParameters()
+            self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+
         # Bucle de control a 20 Hz
         self.timer = self.create_timer(0.05, self.control_loop)
         
@@ -132,9 +152,35 @@ class ControlTrayectoria(Node):
                 self.goal_yaw = None
             
         self.current_target_index = 0
+        self.last_target_index = 0
+        if self._clock_initialized:
+            self.last_advance_time = self.get_clock().now()
         self.ruta_completada = False
         self.pure_rotation_mode = True  # Iniciar cada nueva ruta girando hacia el objetivo
-        self.final_rotation_mode = False
+        self.visual_search_mode = False
+        self.visual_servo_mode = False
+
+    def cam_callback(self, msg):
+        cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        if self.detector is not None:
+            corners, ids, rejected = self.detector.detectMarkers(cv_image)
+        else:
+            corners, ids, rejected = cv2.aruco.detectMarkers(cv_image, self.aruco_dict, parameters=self.aruco_params)
+            
+        self.img_w = cv_image.shape[1]
+        
+        if ids is not None and 5 in ids: # Suponiendo que el cubo usa el ID 5 (meta)
+            idx = list(ids.flatten()).index(5)
+            esquinas = corners[idx][0]
+            # Centroide del ArUco
+            self.marker_cx = np.mean(esquinas[:, 0])
+            # Aproximar area
+            width = np.linalg.norm(esquinas[0] - esquinas[1])
+            height = np.linalg.norm(esquinas[1] - esquinas[2])
+            self.marker_area = width * height
+        else:
+            self.marker_cx = None
+            self.marker_area = None
 
     def odom_callback(self, msg):
         """Lectura de Odometría estándar Yahboom (msg.pose.pose)."""
@@ -328,51 +374,60 @@ class ControlTrayectoria(Node):
         # Distancia del CENTRO del robot al ultimo punto del path (no del punto desplazado x_c)
         dist_to_final = math.hypot(self.path_points[-1][0] - x, self.path_points[-1][1] - y)
 
-        # ---- Llegada a la meta: detectar por distancia, no por indice ----
-        # Threshold de posicion estricto. Una vez detectado, NO se vuelve a mover linealmente.
-        pos_threshold = 0.05  # 5 cm de tolerancia en posicion final
-        if not self.final_rotation_mode and dist_to_final < pos_threshold:
-            self.final_rotation_mode = True
-            # Reset de los filtros para que el suavizado no arrastre velocidad lineal previa
+        # ---- Llegada a la meta RRT -> Iniciar Búsqueda Visual ----
+        pos_threshold = 0.05
+        if not self.visual_search_mode and not self.visual_servo_mode and dist_to_final < pos_threshold:
+            self.visual_search_mode = True
             self.v_prev = 0.0
             self.w_prev = 0.0
-            if self.goal_yaw is not None:
-                self.get_logger().info(
-                    f"Posicion alcanzada (dist={dist_to_final:.3f}m). "
-                    f"Alineando a {math.degrees(self.goal_yaw):.1f} grados..."
-                )
-            else:
-                self.get_logger().info(f"Posicion alcanzada (dist={dist_to_final:.3f}m). Sin orientacion objetivo, deteniendo.")
+            self.get_logger().info(f"Fin de ruta RRT (dist={dist_to_final:.3f}m). Iniciando rotacion de busqueda visual...")
 
-        if self.final_rotation_mode:
-            # Solo rotacion: linear.x SIEMPRE 0, no volver a moverse aunque la pose derive un poco
+        if self.visual_search_mode:
             cmd = Twist()
             cmd.linear.x = 0.0
-
-            if self.goal_yaw is None:
-                # No hay orientacion objetivo: parar y terminar
-                self.cmd_pub.publish(cmd)
-                self.get_logger().info("Meta alcanzada con precision.")
-                self.ruta_completada = True
-                return
-
-            e_theta = self.goal_yaw - theta
-            while e_theta > math.pi: e_theta -= 2.0 * math.pi
-            while e_theta < -math.pi: e_theta += 2.0 * math.pi
-
-            if abs(e_theta) > 0.05:  # ~3 grados
-                w_cmd = 1.2 * e_theta
-                if abs(w_cmd) < 0.3:
-                    w_cmd = 0.3 if e_theta > 0 else -0.3
-                cmd.angular.z = max(min(w_cmd, self.w_max), -self.w_max)
-                self.cmd_pub.publish(cmd)
-                return
+            
+            if self.marker_cx is not None:
+                self.get_logger().info("¡ArUco Encontrado! Pasando a modo Visual Servoing.")
+                self.visual_search_mode = False
+                self.visual_servo_mode = True
             else:
+                # Rotar sobre su eje hasta encontrarlo
+                cmd.angular.z = 0.6
+                self.cmd_pub.publish(cmd)
+            return
+
+        if self.visual_servo_mode:
+            cmd = Twist()
+            if self.marker_cx is None:
+                # Lo perdimos de vista, volver a buscar
+                self.visual_search_mode = True
+                self.visual_servo_mode = False
+                return
+                
+            # Calcular error de pixel (centro de camara = img_w / 2)
+            err_x = (self.img_w / 2.0) - self.marker_cx
+            
+            # Control P para alinear el marcador al centro
+            w_cmd = err_x * 0.003
+            cmd.angular.z = max(min(w_cmd, 0.5), -0.5)
+            
+            # Control para avanzar hacia el marcador
+            # Nos detenemos si el area del marcador es lo suficientemente grande
+            area_objetivo = 18000 # Area en pixeles cuando ya estamos muy cerca
+            
+            if self.marker_area is not None and self.marker_area > area_objetivo:
+                cmd.linear.x = 0.0
                 cmd.angular.z = 0.0
                 self.cmd_pub.publish(cmd)
-                self.get_logger().info("Orientacion final alcanzada. Meta completada.")
+                self.get_logger().info("Meta alcanzada visualmente. ¡Éxito!")
                 self.ruta_completada = True
                 return
+            else:
+                cmd.linear.x = 0.15 # Avanzar despacio
+                
+            self.cmd_pub.publish(cmd)
+            return
+
             
         # 3. Log de progreso cada 2 segundos con Telemetría de Velocidad
         now = self.get_clock().now()
