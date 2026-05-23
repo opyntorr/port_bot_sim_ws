@@ -6,7 +6,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPo
 from geometry_msgs.msg import Twist, PoseStamped, TransformStamped
 from nav_msgs.msg import Path, Odometry
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, Bool
 from tf2_ros import Buffer, TransformListener, StaticTransformBroadcaster, TransformBroadcaster
 import tf2_ros
 import tf_transformations
@@ -91,6 +91,22 @@ class ControlTrayectoria(Node):
         
         # Guard: esperar a que use_sim_time reciba /clock válido antes de operar
         self._clock_initialized = False
+
+        # Guard: esperar a que publicador_tfs_arucos confirme alineacion
+        # mapa-SLAM antes de mover el carrito. Sin esto, hay race condition:
+        # SLAM tarda ~1-3s en publicar su primera TF, durante ese tiempo el
+        # carrito ya puede haber recibido una ruta y movido, invalidando el
+        # alineamiento (que asume cart cerca del origen SLAM).
+        self._alignment_ready = False
+        qos_latch = QoSProfile(
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.alignment_sub = self.create_subscription(
+            Bool, '/alignment_ready', self._alignment_callback, qos_latch
+        )
         
         # Estado del LiDAR y evasión
         self.repulsion_x = 0.0
@@ -129,7 +145,14 @@ class ControlTrayectoria(Node):
 
         # Bucle de control a 20 Hz
         self.timer = self.create_timer(0.05, self.control_loop)
-        
+
+    def _alignment_callback(self, msg):
+        if msg.data and not self._alignment_ready:
+            self.get_logger().info(
+                'Alineacion mapa-SLAM confirmada. Habilitando control de trayectoria.'
+            )
+        self._alignment_ready = bool(msg.data)
+
     def path_callback(self, msg):
         self.get_logger().info("Ruta recibida. Iniciando seguimiento...")
         self.path_points = []
@@ -347,7 +370,21 @@ class ControlTrayectoria(Node):
             self.last_log_time = now
             self._clock_initialized = True
             self.get_logger().info('Reloj de simulación válido. Control listo. Esperando ruta...')
-        
+
+        # Guard: no mover el carrito hasta que la alineacion mapa-SLAM este lista.
+        # Mientras tanto, mantener velocidad cero y reiniciar el watchdog de
+        # progreso para que no se dispare un replan injusto.
+        if not self._alignment_ready:
+            self.cmd_pub.publish(Twist())
+            self.v_prev = 0.0
+            self.w_prev = 0.0
+            self.last_advance_time = self.get_clock().now()
+            self.get_logger().info(
+                'Esperando alineacion mapa-SLAM (/alignment_ready) antes de iniciar control...',
+                throttle_duration_sec=3.0,
+            )
+            return
+
         now = self.get_clock().now()
 
         if not self.path_points:

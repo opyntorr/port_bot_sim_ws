@@ -15,7 +15,9 @@ import math
 import os
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import TransformStamped
+from std_msgs.msg import Bool
 from tf2_ros import StaticTransformBroadcaster
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -55,15 +57,28 @@ class PublicadorTfsArucos(Node):
         self.static_tf = StaticTransformBroadcaster(self)
         self.published = False
 
+        # Publisher latched para que control_trayectoria sepa cuando ya hay
+        # alineacion valida entre `map` (SLAM) y `map_dron_origin` (mundo).
+        # TRANSIENT_LOCAL: subscriptores que se conecten despues reciben el
+        # ultimo mensaje publicado (latched).
+        qos_latch = QoSProfile(
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.alignment_pub = self.create_publisher(Bool, '/alignment_ready', qos_latch)
+
         # Inicializar TF2 Buffer y Listener aqui en __init__ para evitar
         # problemas de concurrencia al crear subscripciones durante el spin
         from tf2_ros import Buffer, TransformListener
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # Reintentar cada 100ms para capturar la alineacion lo antes posible
-        # (antes de que el carrito se mueva de su posicion inicial)
-        self.max_init_displacement = 0.15  # metros: tolerancia entre pose SLAM y origen
+        # Reintentar cada 100ms hasta que SLAM publique su primera TF
+        # map->base_footprint. La sincronia con el control se garantiza via
+        # el topico latched /alignment_ready (carrito no se mueve hasta
+        # que esta alineacion sea publicada).
         self.timer = self.create_timer(0.1, self._tick)
         self._tick()
 
@@ -104,17 +119,15 @@ class PublicadorTfsArucos(Node):
             import math
             myaw = math.atan2(2.0*(mq.w*mq.z + mq.x*mq.y), 1.0 - 2.0*(mq.y*mq.y + mq.z*mq.z))
 
-            # VALIDACION: SLAM ancla 'map' al primer scan, por lo que el carrito
-            # debe estar muy cerca de (0,0) al inicio. Si ya se movio, la alineacion
-            # quedara descalibrada -> abortar y reintentar en el siguiente tick.
-            displacement = math.hypot(mx, my)
-            if displacement > self.max_init_displacement:
-                self.get_logger().warn(
-                    f'Carrito a {displacement:.2f}m del origen SLAM '
-                    f'(>{self.max_init_displacement}m). Esperando que se quede quieto antes de alinear...',
-                    throttle_duration_sec=2.0)
-                return
-
+            # NOTA: NO validamos displacement contra origen SLAM. La premisa
+            # original (carrito debe estar cerca de (0,0)) asume que `odom` se
+            # ancla en el spawn del robot, pero el OdometryPublisher de Ignition
+            # ancla `odom` en el origen del mundo. Asi que el carrito spawneado
+            # en world (-1,-1) aparece en `map` a ~1.42m del origen, lo cual es
+            # NORMAL. La alineacion matematica funciona igual: equipara la pose
+            # actual en `map` con la pose registrada en `arucos.yaml`, asumiendo
+            # que el carrito no se ha movido entre ambos instantes. Esto se
+            # garantiza desde el lado del control con el flag /alignment_ready.
             carrito = data['carrito']
             cx = float(carrito['world_x'])
             cy = float(carrito['world_y'])
@@ -125,8 +138,9 @@ class PublicadorTfsArucos(Node):
             ty = my - (cx * math.sin(phi) + cy * math.cos(phi))
 
             self.get_logger().info(
-                f'Alineacion OptiTrack->SLAM completada. '
-                f'(tx={tx:.3f}, ty={ty:.3f}, despl_inicial={displacement:.3f}m)')
+                f'Alineacion mundo->SLAM completada. '
+                f'(tx={tx:.3f}, ty={ty:.3f}, phi={math.degrees(phi):.1f} deg, '
+                f'pose_map=({mx:.2f},{my:.2f}))')
             aligned = True
 
         except Exception as e:
@@ -198,7 +212,8 @@ class PublicadorTfsArucos(Node):
         if aligned:
             self.published = True
             self.timer.cancel()
-            self.get_logger().info(f'Alineacion final anclada exitosamente.')
+            self.alignment_pub.publish(Bool(data=True))
+            self.get_logger().info(f'Alineacion final anclada exitosamente. /alignment_ready=True publicado.')
 
     def _publish_identity_chain(self, data):
         """Stack Cartographer+prior congelado: `map` es el frame del stitching, no
@@ -234,9 +249,10 @@ class PublicadorTfsArucos(Node):
         self.static_tf.sendTransform(transforms)
         self.published = True
         self.timer.cancel()
+        self.alignment_pub.publish(Bool(data=True))
         self.get_logger().info(
             f'Modo Cartographer+prior: publicadas {len(transforms)} TFs estaticas '
-            f'(identity map->map_dron_origin + {len(data)} arucos).')
+            f'(identity map->map_dron_origin + {len(data)} arucos). /alignment_ready=True publicado.')
 
 
 def main(args=None):

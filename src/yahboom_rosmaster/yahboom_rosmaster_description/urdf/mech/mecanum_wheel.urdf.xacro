@@ -90,11 +90,17 @@
     <xacro:property name="alpha" value="${(x_reflect * y_reflect) * (pi / 4)}" />
 
     <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="0" theta="0.0" alpha="${alpha}" />
-    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="1" theta="${pi/3}" alpha="${alpha}" />
-    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="2" theta="${2*pi/3}" alpha="${alpha}" />
-    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="3" theta="${3*pi/3}" alpha="${alpha}" />
-    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="4" theta="${4*pi/3}" alpha="${alpha}" />
-    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="5" theta="${5*pi/3}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="1" theta="${pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="2" theta="${2*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="3" theta="${3*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="4" theta="${4*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="5" theta="${5*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="6" theta="${6*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="7" theta="${7*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="8" theta="${8*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="9" theta="${9*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="10" theta="${10*pi/6}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="11" theta="${11*pi/6}" alpha="${alpha}" />
 
   </xacro:macro>
 </robot>
