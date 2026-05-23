@@ -45,6 +45,9 @@ install(PROGRAMS
   mi_proyecto_sim/publicador_tfs_arucos.py
   mi_proyecto_sim/amcl_localizer.py
   mi_proyecto_sim/odom_noise_filter.py
+  mi_proyecto_sim/Mcnamu_driver_PID.py
+  mi_proyecto_sim/Mcnamu_driver_PID_sim.py
+  mi_proyecto_sim/SunriseRobotLib.py
   # mi_proyecto_sim/stitching_pose.py
   DESTINATION lib/${PROJECT_NAME}
 )

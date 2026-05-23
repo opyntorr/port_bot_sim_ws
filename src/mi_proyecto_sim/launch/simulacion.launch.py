@@ -30,7 +30,7 @@ def generate_launch_description():
     arucos_yaml = os.path.join(maps_dir, 'arucos.yaml')
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
-    xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco.urdf.xacro')
+    xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco_pid.urdf.xacro')
     rviz_config = os.path.join(pkg_sim, 'rviz', 'configuracion.rviz')
 
     # Limpiar artefactos de la corrida anterior antes de lanzar.
@@ -145,6 +145,44 @@ def generate_launch_description():
         ],
         output='screen'
     )
+
+    # =========================================================
+    # CONTROL PID PARA SIMULACION (Effort Controller)
+    # =========================================================
+    load_joint_state_broadcaster = ExecuteProcess(
+        cmd=['ros2', 'control', 'load_controller', '--set-state', 'active', 'joint_state_broadcaster'],
+        output='screen'
+    )
+    
+    load_effort_controller = ExecuteProcess(
+        cmd=['ros2', 'control', 'load_controller', '--set-state', 'active', 'effort_controller'],
+        output='screen'
+    )
+
+    pid_node = Node(
+        package='mi_proyecto_sim',
+        executable='Mcnamu_driver_PID_sim.py',
+        name='driver_node_pid',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'Kp': 6.0,
+            'Ki': 2.0,
+            'Kff': 9.0,
+            'deadband': 32.0
+        }]
+    )
+
+    seq_1 = RegisterEventHandler(
+        OnProcessExit(target_action=spawner, on_exit=[load_joint_state_broadcaster])
+    )
+    seq_2 = RegisterEventHandler(
+        OnProcessExit(target_action=load_joint_state_broadcaster, on_exit=[load_effort_controller])
+    )
+    seq_3 = RegisterEventHandler(
+        OnProcessExit(target_action=load_effort_controller, on_exit=[pid_node])
+    )
+
 
     # 6b. Gazebo Spawner Dron
     spawner_dron = Node(
@@ -498,5 +536,8 @@ def generate_launch_description():
         foxglove_bridge_node,
         web_video_server_node,
         odom_noise_node,
+        seq_1,
+        seq_2,
+        seq_3,
     ])
 

@@ -4,9 +4,48 @@
   <xacro:property name="wheel_radius" value="0.0325" />
   <xacro:property name="wheel_separation" value="0.169" />
   <xacro:property name="wheel_width" value="0.03040" />
-  <xacro:property name="wheel_mass" value="9.1" />
+  <xacro:property name="wheel_mass" value="0.15" />
+  <xacro:property name="roller_mass" value="0.02" />
+  <xacro:property name="roller_radius" value="0.0065" />
   <xacro:property name="wheel_xoff" value="0.08" />
   <xacro:property name="wheel_yoff" value="-0.01" />
+
+  <xacro:macro name="mecanum_roller" params="prefix side index theta alpha">
+    <link name="${prefix}${side}_roller_${index}_link">
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="${roller_radius}"/>
+        </geometry>
+        <max_contacts>2</max_contacts>
+      </collision>
+      <inertial>
+        <mass value="${roller_mass}"/>
+        <inertia ixx="${2.0/5.0 * roller_mass * roller_radius * roller_radius}" ixy="0" ixz="0"
+                 iyy="${2.0/5.0 * roller_mass * roller_radius * roller_radius}" iyz="0"
+                 izz="${2.0/5.0 * roller_mass * roller_radius * roller_radius}"/>
+      </inertial>
+    </link>
+
+    <joint name="${prefix}${side}_roller_${index}_joint" type="continuous">
+      <parent link="${prefix}${side}_wheel_link"/>
+      <child link="${prefix}${side}_roller_${index}_link"/>
+      <axis xyz="${sin(alpha)} ${cos(alpha)} 0"/>
+      <origin xyz="${(wheel_radius - roller_radius)*sin(theta)} 0 ${(wheel_radius - roller_radius)*cos(theta)}" rpy="0 ${theta} 0"/>
+      <dynamics damping="0.001" friction="0.001"/>
+    </joint>
+
+    <gazebo reference="${prefix}${side}_roller_${index}_link">
+      <mu1>1.0</mu1>
+      <mu2>1.0</mu2>
+      <kp>10000.0</kp>
+      <kd>10.0</kd>
+      <minDepth>0.001</minDepth>
+      <maxVel>1.0</maxVel>
+      <self_collide>false</self_collide>
+      <max_contacts>2</max_contacts>
+    </gazebo>
+  </xacro:macro>
 
   <xacro:macro name="mecanum_wheel" params="prefix side x_reflect y_reflect">
     <link name="${prefix}${side}_wheel_link">
@@ -19,13 +58,6 @@
           <color rgba="0.2 0.2 0.2 1.0"/>
         </material>
       </visual>
-
-      <collision>
-        <origin xyz="0 0 0" rpy="0 0 0"/>
-        <geometry>
-          <sphere radius="${wheel_radius}"/>
-        </geometry>
-      </collision>
 
       <inertial>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -42,24 +74,27 @@
       <parent link="${prefix}base_link"/>
       <child link="${prefix}${side}_wheel_link"/>
       <origin xyz="${x_reflect*wheel_xoff} ${y_reflect*(wheel_separation/2+wheel_yoff)} ${-wheel_radius}" rpy="0 0 0"/>
+      <dynamics damping="0.2" friction="0.1"/>
     </joint>
 
     <gazebo reference="${prefix}${side}_wheel_link">
-      <surface>
-        <friction>
-          <ode>
-              <mu>1.0</mu>
-              <mu2>0.5</mu2>
-          </ode>
-        </friction>
-      </surface>
       <visual>
           <material>
               <ambient>0.2 0.2 0.2 1.0</ambient>
               <diffuse>0.2 0.2 0.2 1.0</diffuse>
           </material>
       </visual>
+      <self_collide>false</self_collide>
     </gazebo>
+
+    <xacro:property name="alpha" value="${(x_reflect * y_reflect) * (pi / 4)}" />
+
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="0" theta="0.0" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="1" theta="${pi/3}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="2" theta="${2*pi/3}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="3" theta="${3*pi/3}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="4" theta="${4*pi/3}" alpha="${alpha}" />
+    <xacro:mecanum_roller prefix="${prefix}" side="${side}" index="5" theta="${5*pi/3}" alpha="${alpha}" />
 
   </xacro:macro>
 </robot>

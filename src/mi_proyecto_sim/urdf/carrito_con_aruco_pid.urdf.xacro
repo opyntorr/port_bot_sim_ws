@@ -1,0 +1,102 @@
+<?xml version="1.0"?>
+<robot name="rosmaster_x3_aruco_pid" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:property name="M_PI" value="3.1415926535897931" />
+    <xacro:arg name="robot_name" default="rosmaster_x3"/>
+    <xacro:arg name="prefix" default=""/>
+    <xacro:arg name="use_gazebo" default="true"/>
+
+    <!-- 1. Cargar las partes mecánicas y sensores base originales -->
+    <xacro:include filename="$(find yahboom_rosmaster_description)/urdf/mech/rosmaster_x3_base.urdf.xacro"/>
+    <xacro:include filename="$(find yahboom_rosmaster_description)/urdf/mech/mecanum_wheel.urdf.xacro"/>
+    <xacro:include filename="$(find yahboom_rosmaster_description)/urdf/sensors/rgbd_camera.urdf.xacro"/>
+    <xacro:include filename="$(find yahboom_rosmaster_description)/urdf/sensors/lidar.urdf.xacro"/>
+    <xacro:include filename="$(find yahboom_rosmaster_description)/urdf/sensors/imu.urdf.xacro"/>
+
+    <!-- Instanciar el chasis y las ruedas -->
+    <xacro:rosmaster_x3_base prefix="$(arg prefix)"/>
+    <xacro:mecanum_wheel prefix="$(arg prefix)" side="front_left" x_reflect="1" y_reflect="1"/>
+    <xacro:mecanum_wheel prefix="$(arg prefix)" side="front_right" x_reflect="1" y_reflect="-1"/>
+    <xacro:mecanum_wheel prefix="$(arg prefix)" side="back_left" x_reflect="-1" y_reflect="1"/>
+    <xacro:mecanum_wheel prefix="$(arg prefix)" side="back_right" x_reflect="-1" y_reflect="-1"/>
+
+    <!-- Instanciar sensores -->
+    <xacro:rgbd_camera prefix="$(arg prefix)" camera_name="cam_1" xyz_offset="0.105 0 0.05" rpy_offset="0 0 0" update_rate="30.0" clip_far="50.0" />
+    <xacro:lidar_sensor prefix="$(arg prefix)" parent="base_link" frame_id="laser_frame" xyz_offset="0 0 0.0825" rpy_offset="0 0 0" mesh_xyz_offset="0 0 0" mesh_rpy_offset="${-M_PI/2} 0 0" topic_name="scan"/>
+    <xacro:imu_sensor prefix="$(arg prefix)" parent="base_link" frame_id="imu" xyz_offset="0 0 0.006" rpy_offset="0 0 0" update_rate="15.0" topic_name="imu/data"/>
+
+    <!-- 2. ArUco del Carrito (Tu código original) -->
+    <link name="techo_aruco_link">
+        <visual>
+            <geometry><box size="0.18 0.18 0.001" /></geometry>
+        </visual>
+        <collision>
+            <geometry><box size="0.18 0.18 0.001" /></geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1" />
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+        </inertial>
+    </link>
+    <gazebo reference="techo_aruco_link">
+        <visual>
+            <material>
+                <diffuse>1 1 1 1</diffuse>
+                <pbr>
+                    <metal>
+                        <albedo_map>file://$(find mi_proyecto_sim)/models/marcador_aruco/materials/textures/aruco4.png</albedo_map>
+                    </metal>
+                </pbr>
+            </material>
+        </visual>
+    </gazebo>
+    <joint name="aruco_base_joint" type="fixed">
+        <parent link="base_link" />
+        <child link="techo_aruco_link" />
+        <origin xyz="0 0 0.19" rpy="0 0 0" />
+    </joint>
+
+    <!-- 3. NUEVO: ros2_control habilitando Torques (Effort) para las 4 ruedas -->
+    <ros2_control name="IgnitionSystem" type="system">
+        <hardware>
+            <plugin>ign_ros2_control/IgnitionSystem</plugin>
+        </hardware>
+        <joint name="front_left_wheel_joint">
+            <command_interface name="effort"><param name="min">-2.5</param><param name="max">2.5</param></command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="front_right_wheel_joint">
+            <command_interface name="effort"><param name="min">-2.5</param><param name="max">2.5</param></command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="back_left_wheel_joint">
+            <command_interface name="effort"><param name="min">-2.5</param><param name="max">2.5</param></command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+        <joint name="back_right_wheel_joint">
+            <command_interface name="effort"><param name="min">-2.5</param><param name="max">2.5</param></command_interface>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+        </joint>
+    </ros2_control>
+
+    <!-- 4. Plugins de Gazebo -->
+    <gazebo>
+        <!-- Plugin de ros2_control que lee el archivo yaml -->
+        <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+            <parameters>$(find mi_proyecto_sim)/config/controllers_pid.yaml</parameters>
+        </plugin>
+        
+        <!-- Mantenemos el publicador de odometría base para que funcione RViz y SLAM -->
+        <plugin filename="libignition-gazebo-odometry-publisher-system.so" name="ignition::gazebo::systems::OdometryPublisher">
+            <odom_frame>odom</odom_frame>
+            <robot_base_frame>base_footprint</robot_base_frame>
+            <odom_publish_frequency>50</odom_publish_frequency>
+            <dimensions>3</dimensions>
+        </plugin>
+    </gazebo>
+
+</robot>
