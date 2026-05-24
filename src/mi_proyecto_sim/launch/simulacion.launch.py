@@ -109,7 +109,7 @@ def generate_launch_description():
         package='rqt_image_view',
         executable='rqt_image_view',
         name='image_view_carrito', # Nombre único
-        arguments=['/cam_1/image'], # El tópico de la cámara de tu carrito
+        arguments=['/cam_1/image_aruco'], # El tópico de la cámara de tu carrito
         output='screen'
     )
 

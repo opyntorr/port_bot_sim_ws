@@ -148,6 +148,8 @@ class ControlTrayectoria(Node):
         # Suscriptor a la camara del carrito
         self.bridge = CvBridge()
         self.cam_sub = self.create_subscription(Image, '/cam_1/image', self.cam_callback, 1)
+        # Publicador de la imagen con ArUcos dibujados
+        self.image_pub = self.create_publisher(Image, '/cam_1/image_aruco', 1)
         self.marker_cx = None
         self.marker_area = None
         self.marker_asymmetry = None  # +: robot a la derecha del perpendicular al cubo
@@ -244,9 +246,12 @@ class ControlTrayectoria(Node):
             self.marker_area = None
             self.marker_asymmetry = None
             
-        # Mostrar la imagen
-        cv2.imshow("Camara Carrito (ArUco)", cv_image)
-        cv2.waitKey(1)
+        # Publicar la imagen para rqt_image_view
+        try:
+            img_msg = self.bridge.cv2_to_imgmsg(cv_image, "bgr8")
+            self.image_pub.publish(img_msg)
+        except Exception as e:
+            self.get_logger().error(f"Error al publicar imagen con ArUco: {e}")
 
     def odom_callback(self, msg):
         """Lectura de Odometría estándar Yahboom (msg.pose.pose)."""
