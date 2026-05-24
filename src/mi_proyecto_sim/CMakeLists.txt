@@ -48,6 +48,7 @@ install(PROGRAMS
   mi_proyecto_sim/Mcnamu_driver_PID.py
   mi_proyecto_sim/Mcnamu_driver_PID_sim.py
   mi_proyecto_sim/SunriseRobotLib.py
+  mi_proyecto_sim/nav_goal_bridge.py
   # mi_proyecto_sim/stitching_pose.py
   DESTINATION lib/${PROJECT_NAME}
 )

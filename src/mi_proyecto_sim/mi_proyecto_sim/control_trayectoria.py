@@ -19,8 +19,14 @@ import cv2
 class ControlTrayectoria(Node):
     def __init__(self):
         super().__init__('control_trayectoria')
-        
+
         # El parametro use_sim_time se gestiona automaticamente por ROS 2 si se pasa en el comando.
+
+        # Cuando es True, al terminar el approach terminal el robot se detiene
+        # en vez de pasar a visual_search/visual_servo (estacionamiento en cubo).
+        # Pensado para navegacion manual con goal puesto desde RViz.
+        self.declare_parameter('disable_visual_modes', False)
+        self.disable_visual_modes = self.get_parameter('disable_visual_modes').value
         
         # Configurar QoS Transient Local para poder leer la ruta publicada previamente
         qos_profile = QoSProfile(
@@ -223,8 +229,8 @@ class ControlTrayectoria(Node):
         if ids is not None:
             cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
             
-            if 0 in ids: # El cubo meta usa el ID 0
-                idx = list(ids.flatten()).index(0)
+            if 1 in ids: # El cubo meta usa el ID 1 en sus caras laterales
+                idx = list(ids.flatten()).index(1)
                 esquinas = corners[idx][0]
                 # Centroide del ArUco
                 self.marker_cx = np.mean(esquinas[:, 0])
@@ -491,9 +497,16 @@ class ControlTrayectoria(Node):
                 )
             if self.terminal_approach_mode and dist_to_final < self.terminal_arrival:
                 self.terminal_approach_mode = False
-                self.visual_search_mode = True
                 self.v_prev = 0.0
                 self.w_prev = 0.0
+                if self.disable_visual_modes:
+                    self.ruta_completada = True
+                    self.stop_robot()
+                    self.get_logger().info(
+                        f"Goal alcanzado (dist={dist_to_final:.3f}m). Modos visuales deshabilitados, deteniendo."
+                    )
+                    return
+                self.visual_search_mode = True
                 self.get_logger().info(
                     f"Aproximacion terminal completa (dist={dist_to_final:.3f}m). Iniciando busqueda visual..."
                 )

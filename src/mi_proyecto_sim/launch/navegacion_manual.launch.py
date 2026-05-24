@@ -1,24 +1,24 @@
 """
-Launch para construir un mapa con SLAM Toolbox controlando el carrito
-manualmente con un mando Xbox.
+Launch para navegacion manual del carrito con goal puesto desde RViz.
 
-Incluye:
-  - Gazebo con el mundo del laberinto.
-  - Carrito Rosmaster X3 (URDF + control PID via effort_controller).
-  - Puente ROS <-> Gazebo (clock, cmd_vel, scan, odometry, tf, pose).
-  - odom_noise_filter: republica /odom_raw -> /odom y /tf_raw -> /tf
-    (esencial para que SLAM tenga la cadena TF odom -> base_footprint).
-    Ruido en 0 por defecto, no introduce drift artificial.
-  - Joy + teleop_twist_joy para control con mando Xbox.
-  - filtro_lidar (genera /scan_filtered que consume SLAM Toolbox).
-  - SLAM Toolbox en modo mapping (online_async) con
-    config/mapper_params_online_async.yaml.
-  - RViz con rviz/mapeo.rviz (display de Map, LaserScan, TF, RobotModel).
+Flujo:
+  1. Carga un mapa previamente generado (PGM + YAML) en map_server.
+  2. AMCL localiza al carrito en el mapa (frame `map`). Para fijar la pose
+     inicial usa la tool "2D Pose Estimate" de RViz, que publica /initialpose.
+  3. El usuario fija el destino con "2D Goal Pose" en RViz (-> /goal_pose).
+  4. nav_goal_bridge convierte /goal_pose en una TF `meta_aruco` y publica
+     la TF `carrito_aruco` (pose actual del robot). Tambien publica la TF
+     `map -> map_dron_origin` (identidad) y /alignment_ready=True para
+     desbloquear control_trayectoria.
+  5. planificador_rrt planea una ruta entre `carrito_aruco` y `meta_aruco`
+     usando el mapa cargado.
+  6. control_trayectoria sigue la ruta. Modos de busqueda y estacionamiento
+     visual estan deshabilitados (disable_visual_modes=True): al llegar al
+     terminal_arrival el robot se detiene.
 
-Para guardar el mapa, en otra terminal mientras la sim corre:
-    ros2 run mi_proyecto_sim guardar_mapa_slam.py --ros-args \\
-        -p output_dir:=src/mi_proyecto_sim/maps \\
-        -p map_name:=mi_mapa
+Argumentos:
+  map  : path absoluto al .yaml del mapa (default: mapa_mision.yaml en
+         src/mi_proyecto_sim/maps)
 """
 
 import os
@@ -26,22 +26,31 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable,
-    TimerAction, IncludeLaunchDescription, RegisterEventHandler,
+    TimerAction, RegisterEventHandler, DeclareLaunchArgument, IncludeLaunchDescription,
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, Command
 from launch_ros.actions import Node
-from launch.substitutions import Command
-from launch_ros.parameter_descriptions import ParameterValue, ParameterFile
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
     pkg_sim = get_package_share_directory('mi_proyecto_sim')
+    ws_root = os.path.abspath(os.path.join(pkg_sim, '..', '..', '..', '..'))
+    maps_dir = os.path.join(ws_root, 'src', 'mi_proyecto_sim', 'maps')
+    default_map = os.path.join(maps_dir, 'mapa_mision.yaml')
+
     world_file = os.path.join(pkg_sim, 'worlds', 'laberinto.sdf')
     models_dir = os.path.join(pkg_sim, 'models')
     xacro_file = os.path.join(pkg_sim, 'urdf', 'carrito_con_aruco_pid.urdf.xacro')
-    slam_params = os.path.join(pkg_sim, 'config', 'mapper_params_online_async.yaml')
-    xbox_params = os.path.join(pkg_sim, 'config', 'xbox_mecanum.yaml')
+
+    map_arg = DeclareLaunchArgument(
+        'map',
+        default_value=default_map,
+        description='Path al YAML del mapa a cargar',
+    )
+    map_yaml = LaunchConfiguration('map')
 
     # =========================================================
     # GAZEBO
@@ -85,7 +94,7 @@ def generate_launch_description():
     )
 
     # =========================================================
-    # CARRITO ROSMASTER (URDF + PID)
+    # CARRITO (URDF + PID effort controller)
     # =========================================================
     robot_state_publisher = Node(
         package='robot_state_publisher',
@@ -105,10 +114,7 @@ def generate_launch_description():
         arguments=[
             '-name', 'rosmaster_x3',
             '-topic', 'robot_description',
-            '-x', '-1.0',
-            '-y', '-1.0',
-            '-z', '0.1',
-            '-Y', '1.5708',
+            '-x', '-1.0', '-y', '-1.0', '-z', '0.1', '-Y', '1.5708',
         ],
         output='screen',
     )
@@ -132,10 +138,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'Kp': 6.0,
-            'Ki': 2.0,
-            'Kff': 9.0,
-            'deadband': 32.0,
+            'Kp': 6.0, 'Ki': 2.0, 'Kff': 9.0, 'deadband': 32.0,
         }],
     )
 
@@ -152,8 +155,6 @@ def generate_launch_description():
 
     # =========================================================
     # ODOM + TF FORWARDER
-    # /odom_raw -> /odom y /tf_raw -> /tf (con ruido en 0).
-    # Sin este nodo SLAM no tiene la cadena TF odom -> base_footprint.
     # =========================================================
     odom_forwarder = Node(
         package='mi_proyecto_sim',
@@ -162,41 +163,11 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'noise_std_x': 0.0,
-            'noise_std_y': 0.0,
-            'noise_std_yaw': 0.0,
-            'drift_x_per_sec': 0.0,
-            'drift_y_per_sec': 0.0,
-            'drift_yaw_per_sec': 0.0,
+            'noise_std_x': 0.0, 'noise_std_y': 0.0, 'noise_std_yaw': 0.0,
+            'drift_x_per_sec': 0.0, 'drift_y_per_sec': 0.0, 'drift_yaw_per_sec': 0.0,
         }],
     )
 
-    # =========================================================
-    # TELEOP XBOX
-    # =========================================================
-    joy_node = Node(
-        package='joy',
-        executable='joy_node',
-        name='joy_node',
-        output='screen',
-    )
-
-    teleop = Node(
-        package='teleop_twist_joy',
-        executable='teleop_node',
-        name='teleop_twist_joy',
-        parameters=[ParameterFile(xbox_params, allow_substs=True)],
-        remappings=[
-            ('joy', '/joy'),
-            ('cmd_vel', '/cmd_vel'),
-        ],
-        output='screen',
-    )
-
-    # =========================================================
-    # SLAM TOOLBOX (online async, modo mapping)
-    # Consume /scan_filtered del filtro de LiDAR.
-    # =========================================================
     filtro_lidar_node = Node(
         package='mi_proyecto_sim',
         executable='filtro_lidar.py',
@@ -205,27 +176,91 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
-    # TimerAction(5s): margen para que LiDAR/odom publiquen antes del primer scan.
-    slam_toolbox_launch = TimerAction(
-        period=5.0,
-        actions=[
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(
-                        get_package_share_directory('slam_toolbox'),
-                        'launch', 'online_async_launch.py'
-                    )
-                ),
-                launch_arguments={
-                    'slam_params_file': slam_params,
-                    'use_sim_time': 'true',
-                }.items(),
-            )
-        ],
+    # =========================================================
+    # MAP SERVER PLANNER
+    # /map_dron -> para planificador_rrt (mismo yaml, distinto frame_id/topic)
+    # =========================================================
+    map_server_planner = Node(
+        package='nav2_map_server',
+        executable='map_server',
+        name='map_server_planner',
+        output='screen',
+        parameters=[{
+            'yaml_filename': map_yaml,
+            'use_sim_time': True,
+            'frame_id': 'map_dron_origin',
+        }],
+        remappings=[('/map', '/map_dron')],
+    )
+
+    lifecycle_manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_localization',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'autostart': True,
+            'node_names': ['map_server_planner'],
+        }],
     )
 
     # =========================================================
-    # VISUALIZACION
+    # SLAM TOOLBOX (Mapping)
+    # =========================================================
+    slam_toolbox_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('slam_toolbox'),
+                'launch', 'online_async_launch.py'
+            )
+        ),
+        launch_arguments={
+            'slam_params_file': os.path.join(pkg_sim, 'config', 'mapper_params_online_async.yaml'),
+            'use_sim_time': 'true',
+        }.items(),
+    )
+
+    # =========================================================
+    # NAV GOAL BRIDGE
+    # Publica meta_aruco (desde /goal_pose), carrito_aruco (pose actual),
+    # TF map -> map_dron_origin (identidad) y /alignment_ready=True.
+    # =========================================================
+    nav_goal_bridge = Node(
+        package='mi_proyecto_sim',
+        executable='nav_goal_bridge.py',
+        name='nav_goal_bridge',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    # =========================================================
+    # PLANIFICADOR + CONTROL DE TRAYECTORIA
+    # =========================================================
+    planificador_rrt_node = Node(
+        package='mi_proyecto_sim',
+        executable='planificador_rrt',
+        name='planificador_rrt',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'robot_radius_m': 0.19,
+        }],
+    )
+
+    control_trayectoria_node = Node(
+        package='mi_proyecto_sim',
+        executable='control_trayectoria.py',
+        name='control_trayectoria',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'disable_visual_modes': True,
+        }],
+    )
+
+    # =========================================================
+    # RVIZ
     # =========================================================
     rviz_node = Node(
         package='rviz2',
@@ -236,7 +271,20 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
+    # Damos margen al TF tree y al map_server antes de arrancar SLAM y planner.
+    delayed_nav_stack = TimerAction(
+        period=5.0,
+        actions=[
+            slam_toolbox_launch,
+            lifecycle_manager,
+            nav_goal_bridge,
+            planificador_rrt_node,
+            control_trayectoria_node,
+        ],
+    )
+
     return LaunchDescription([
+        map_arg,
         set_env,
         plugin_env,
         gui_fov_env,
@@ -245,11 +293,10 @@ def generate_launch_description():
         robot_state_publisher,
         spawner,
         odom_forwarder,
-        joy_node,
-        teleop,
         filtro_lidar_node,
-        slam_toolbox_launch,
+        map_server_planner,
         rviz_node,
+        delayed_nav_stack,
         seq_1,
         seq_2,
         seq_3,

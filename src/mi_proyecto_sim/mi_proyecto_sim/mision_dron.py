@@ -138,7 +138,7 @@ class MisionDron(Node):
             self.aruco_params = cv2.aruco.DetectorParameters()
             self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
 
-        self.REST_ARUCO_ID = 1
+        self.REST_ARUCO_ID = 2
         self.REST_ARUCO_NOMINAL_X = 0.0
         self.REST_ARUCO_NOMINAL_Y = -1.4
 
