@@ -61,7 +61,7 @@ class McnamuDriverPID(Node):
         self.declare_parameter('Kff', 9.0)
 
         # Banda muerta hardware del Yahboom (~30-50 PWM según notas)
-        self.declare_parameter('deadband', 32.0)
+        self.declare_parameter('deadband', 40.0)
 
         Lx = self.get_parameter('Lx').get_parameter_value().double_value
         Ly = self.get_parameter('Ly').get_parameter_value().double_value
@@ -172,13 +172,12 @@ class McnamuDriverPID(Node):
                 self.integral[i]  = max(-40.0, min(40.0, self.integral[i]))
 
                 # ── Control: feedforward + PI feedback ───────────────────
-                u_ff  = self.Kff * w_ref                           # feedforward
-                u_pi  = self.Kp * error + self.Ki * self.integral[i]  # PI
-                u_raw = u_ff + u_pi
-
-                # Compensar banda muerta: garantizar señal mínima con signo correcto
-                if 0.0 < abs(u_raw) < self.deadband:
-                    u_raw = copysign(self.deadband, u_raw)
+                # FIX HARDWARE: El feedforward suma la banda muerta como base para romper la inercia
+                u_base = copysign(self.deadband, w_ref) if abs(w_ref) > 0.0 else 0.0
+                u_ff   = u_base + (self.Kff * w_ref)
+                
+                u_pi   = self.Kp * error + self.Ki * self.integral[i]  # PI
+                u_raw  = u_ff + u_pi
 
                 pwm[i] = max(-100.0, min(100.0, u_raw))
 

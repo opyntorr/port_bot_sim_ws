@@ -31,8 +31,7 @@
         <origin xyz="${base_x_offset} 0 ${base_size_z/2 + wheel_radius/4}" rpy="0 0 0"/>
     </collision>
     <inertial>
-        <!-- SIM-TO-REAL FIX: Centramos el CoM en X=0 y Y=0 para evitar que el robot rote al hacer strafe -->
-        <origin xyz="0 0 ${base_size_z/2 + wheel_radius/4}" rpy="0 0 0"/>
+        <origin xyz="${base_x_offset} 0 ${base_size_z/2 + wheel_radius/4}" rpy="0 0 0"/>
         <mass value="${base_mass}"/>
         <inertia
             ixx="${(1/12) * base_mass * ((base_size_y * base_size_y) + (base_size_z * base_size_z))}" ixy="0.0" ixz="0.0"

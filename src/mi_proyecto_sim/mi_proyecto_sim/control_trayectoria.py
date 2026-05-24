@@ -72,9 +72,23 @@ class ControlTrayectoria(Node):
         self.current_target_index = 0
         self.ruta_completada = False
         self.pure_rotation_mode = False
+        self._check_initial_alignment = False  # Chequeo one-shot al recibir la ruta
         self.visual_search_mode = False
         self.visual_servo_mode = False
         self.goal_yaw = None  # Orientacion objetivo (se extrae del ultimo punto del Path)
+
+        # Fase de aproximacion terminal (go-to-point sobre el centro del robot)
+        # Sustituye a Kelly & Diaz en los ultimos cm para que el centro alcance
+        # la meta (Kelly & Diaz controla el punto desplazado x_c y siempre deja
+        # al centro h metros corto del waypoint final).
+        self.terminal_approach_mode = False
+        self.terminal_threshold = 0.60    # m, entra a terminal cuando el centro esta a esta dist
+        self.terminal_arrival = 0.15      # m, salta a visual_search al llegar a esta dist
+        self.terminal_yaw_tol = 0.10      # rad, tolerancia de alineacion al goal
+        self.k_v_terminal = 0.6           # ganancia P sobre distancia
+        self.v_max_terminal = 0.12        # m/s, mas suave que v_max para precision
+        self.k_w_terminal = 1.2           # ganancia P de rotacion
+        self.w_min_terminal = 0.30        # rad/s, minimo para vencer friccion
         
         # Variables para replanificación automática (Watchdog)
         self.replan_pub = self.create_publisher(Empty, '/replan_request', 10)
@@ -132,6 +146,7 @@ class ControlTrayectoria(Node):
         self.cam_sub = self.create_subscription(Image, '/cam_1/image', self.cam_callback, 1)
         self.marker_cx = None
         self.marker_area = None
+        self.marker_asymmetry = None  # +: robot a la derecha del perpendicular al cubo
         self.img_w = 640
         
         try:
@@ -180,8 +195,10 @@ class ControlTrayectoria(Node):
             self.last_advance_time = self.get_clock().now()
         self.ruta_completada = False
         self.pure_rotation_mode = True  # Iniciar cada nueva ruta girando hacia el objetivo
+        self._check_initial_alignment = True  # One-shot: si ya hay alineacion, saltar pure_rotation
         self.visual_search_mode = False
         self.visual_servo_mode = False
+        self.terminal_approach_mode = False
 
     def cam_callback(self, msg):
         cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
@@ -197,13 +214,19 @@ class ControlTrayectoria(Node):
             esquinas = corners[idx][0]
             # Centroide del ArUco
             self.marker_cx = np.mean(esquinas[:, 0])
-            # Aproximar area
-            width = np.linalg.norm(esquinas[0] - esquinas[1])
-            height = np.linalg.norm(esquinas[1] - esquinas[2])
-            self.marker_area = width * height
+            # Lados para área y asimetría
+            lado_sup = np.linalg.norm(esquinas[0] - esquinas[1])
+            lado_der = np.linalg.norm(esquinas[1] - esquinas[2])
+            lado_inf = np.linalg.norm(esquinas[2] - esquinas[3])
+            lado_izq = np.linalg.norm(esquinas[3] - esquinas[0])
+            self.marker_area = lado_sup * lado_der
+            
+            promedio = (lado_der + lado_izq) / 2.0
+            self.marker_asymmetry = (lado_der - lado_izq) / promedio if promedio > 0 else 0.0
         else:
             self.marker_cx = None
             self.marker_area = None
+            self.marker_asymmetry = None
 
     def odom_callback(self, msg):
         """Lectura de Odometría estándar Yahboom (msg.pose.pose)."""
@@ -295,16 +318,11 @@ class ControlTrayectoria(Node):
         self.obstaculo_cerca = obstaculo
         self.peligro_frontal = peligro_frontal
         
-        # LOG DE DIAGNÓSTICO CADA SEGUNDO
-        now = self.get_clock().now()
-        if self.last_log_time is not None and (now - self.last_log_time).nanoseconds / 1e9 > 1.0:
-            if not obstaculo:
-                 self.get_logger().info(f"LIDAR: Camino despejado. Min Frontal: {self.min_dist_frontal:.2f}m")
-            else:
-                 self.get_logger().warn(f"LIDAR: ¡OBSTÁCULO! Dist: {self.min_dist_frontal:.2f}m | Fuerza Rep: [{self.repulsion_x:.2f}, {self.repulsion_y:.2f}]")
-            
-            if num_invalidos > len(msg.ranges) * 0.9:
-                self.get_logger().error("CRITICO: El LIDAR esta recibiendo casi todos los datos invalidos (inf/nan).")
+        if num_invalidos > len(msg.ranges) * 0.9:
+            self.get_logger().error(
+                "CRITICO: El LIDAR esta recibiendo casi todos los datos invalidos (inf/nan).",
+                throttle_duration_sec=2.0,
+            )
 
     def get_current_pose(self):
         # Intentar obtener la pose corregida por AMCL a traves de TF
@@ -420,13 +438,40 @@ class ControlTrayectoria(Node):
         # Distancia del CENTRO del robot al ultimo punto del path (no del punto desplazado x_c)
         dist_to_final = math.hypot(self.path_points[-1][0] - x, self.path_points[-1][1] - y)
 
-        # ---- Llegada a la meta RRT -> Iniciar Búsqueda Visual ----
-        pos_threshold = 0.05
-        if not self.visual_search_mode and not self.visual_servo_mode and dist_to_final < pos_threshold:
-            self.visual_search_mode = True
-            self.v_prev = 0.0
-            self.w_prev = 0.0
-            self.get_logger().info(f"Fin de ruta RRT (dist={dist_to_final:.3f}m). Iniciando rotacion de busqueda visual...")
+        # Status log throttled a 5s: modo actual, waypoint, dist a meta, dist frontal LiDAR
+        if self.visual_servo_mode:
+            mode_str = "VISUAL_SERVO"
+        elif self.visual_search_mode:
+            mode_str = "VISUAL_SEARCH"
+        elif self.terminal_approach_mode:
+            mode_str = "TERMINAL"
+        elif self.pure_rotation_mode:
+            mode_str = "PURE_ROT"
+        else:
+            mode_str = "KD"
+        self.get_logger().info(
+            f"[STATUS] mode={mode_str} wpt={self.current_target_index}/{len(self.path_points)} "
+            f"dist_final={dist_to_final:.2f}m min_front={self.min_dist_frontal:.2f}m",
+            throttle_duration_sec=5.0,
+        )
+
+        # ---- Llegada a la meta: Kelly & Diaz -> Aproximacion terminal -> Busqueda Visual ----
+        if not self.visual_search_mode and not self.visual_servo_mode:
+            if not self.terminal_approach_mode and dist_to_final < self.terminal_threshold:
+                self.terminal_approach_mode = True
+                self.v_prev = 0.0
+                self.w_prev = 0.0
+                self.get_logger().info(
+                    f"Fin de Kelly & Diaz (dist={dist_to_final:.3f}m). Aproximacion terminal go-to-point..."
+                )
+            if self.terminal_approach_mode and dist_to_final < self.terminal_arrival:
+                self.terminal_approach_mode = False
+                self.visual_search_mode = True
+                self.v_prev = 0.0
+                self.w_prev = 0.0
+                self.get_logger().info(
+                    f"Aproximacion terminal completa (dist={dist_to_final:.3f}m). Iniciando busqueda visual..."
+                )
 
         if self.visual_search_mode:
             cmd = Twist()
@@ -450,48 +495,75 @@ class ControlTrayectoria(Node):
                 self.visual_servo_mode = False
                 return
                 
-            # Calcular error de pixel (centro de camara = img_w / 2)
+            # 1. Rotación: centrar marker en la imagen
             err_x = (self.img_w / 2.0) - self.marker_cx
-            
-            # Control P para alinear el marcador al centro
             w_cmd = err_x * 0.003
-            cmd.angular.z = max(min(w_cmd, 0.5), -0.5)
+            cmd.angular.z = max(min(w_cmd, 0.4), -0.4)
             
-            # Control para avanzar hacia el marcador
-            # Nos detenemos si el area del marcador es lo suficientemente grande
-            area_objetivo = 18000 # Area en pixeles cuando ya estamos muy cerca
+            # 2. Strafe lateral: corregir asimetría para lograr perpendicularidad
+            # Asimetría > 0 -> lado der más grande -> robot a la derecha -> strafe izq (+y)
+            strafe_cmd = self.marker_asymmetry * 0.5
+            cmd.linear.y = max(min(strafe_cmd, 0.15), -0.15)
             
-            if self.marker_area is not None and self.marker_area > area_objetivo:
+            # 3. Avance: controlar distancia (área)
+            area_objetivo = 18000
+            area_err = area_objetivo - self.marker_area
+            # Control P de velocidad (avanza más despacio al acercarse)
+            v_cmd = area_err * 0.00001
+            cmd.linear.x = max(min(v_cmd, 0.12), 0.03) # Velocidad min para no atascarse
+            
+            # 4. Condición de Paro: Área grande, marker centrado y asimetría pequeña
+            if self.marker_area > (area_objetivo * 0.9) and abs(err_x) < 30 and abs(self.marker_asymmetry) < 0.08:
                 cmd.linear.x = 0.0
+                cmd.linear.y = 0.0
                 cmd.angular.z = 0.0
                 self.cmd_pub.publish(cmd)
-                self.get_logger().info("Meta alcanzada visualmente. ¡Éxito!")
+                self.get_logger().info(f"Parqueo completado. Asimetria final: {self.marker_asymmetry:.3f}")
                 self.ruta_completada = True
                 return
-            else:
-                cmd.linear.x = 0.15 # Avanzar despacio
-                
+
             self.cmd_pub.publish(cmd)
             return
 
-            
-        # 3. Log de progreso cada 2 segundos con Telemetría de Velocidad
-        now = self.get_clock().now()
-        if (now - self.last_log_time).nanoseconds / 1e9 > 2.0:
-            percent = (self.current_target_index + 1) / len(self.path_points) * 100
-            # Incluimos V y W actuales para ver si el robot se está intentando mover
-            self.get_logger().info(f"Seguimiento: {self.current_target_index + 1}/{len(self.path_points)} ({percent:.1f}%) | V: {self.v_prev:.2f} W: {self.w_prev:.2f}")
-            self.last_log_time = now
+        if self.terminal_approach_mode:
+            x_goal_w = self.path_points[-1][0]
+            y_goal_w = self.path_points[-1][1]
+            e_x_world = x_goal_w - x
+            e_y_world = y_goal_w - y
+            e_x_local = e_x_world * math.cos(theta) + e_y_world * math.sin(theta)
+            e_y_local = -e_x_world * math.sin(theta) + e_y_world * math.cos(theta)
 
-        # 4. Watchdog: Si no avanzamos de punto en 4 segundos, replanificar
+            cmd = Twist()
+            v_x = self.k_v_terminal * e_x_local
+            v_y = self.k_v_terminal * e_y_local
+            
+            # Velocidad mínima para no atascarse por fricción
+            if 0 < abs(v_x) < 0.05: v_x = 0.05 if v_x > 0 else -0.05
+            if 0 < abs(v_y) < 0.05: v_y = 0.05 if v_y > 0 else -0.05
+            
+            cmd.linear.x = max(min(v_x, self.v_max_terminal), -self.v_max_terminal)
+            cmd.linear.y = max(min(v_y, self.v_max_terminal), -self.v_max_terminal)
+
+            if self.goal_yaw is not None:
+                e_theta = self.goal_yaw - theta
+                while e_theta > math.pi: e_theta -= 2.0 * math.pi
+                while e_theta < -math.pi: e_theta += 2.0 * math.pi
+                w = self.k_w_terminal * e_theta
+                if 0 < abs(w) < self.w_min_terminal: w = self.w_min_terminal if w > 0 else -self.w_min_terminal
+                cmd.angular.z = max(min(w, self.w_max), -self.w_max)
+            else:
+                cmd.angular.z = 0.0
+
+            self.cmd_pub.publish(cmd)
+            self.v_prev = cmd.linear.x
+            self.w_prev = cmd.angular.z
+            return
+
+        # Watchdog: Si no avanzamos de punto en 4 segundos, replanificar
         # EXCEPCION: No replanificar si ya estamos cerca de la meta final
-        near_final_goal = (self.current_target_index >= len(self.path_points) - 2 and dist_to_final < 0.25)
+        near_final_goal = (self.current_target_index >= len(self.path_points) - 2 and dist_to_final < self.terminal_threshold + 0.05)
         now = self.get_clock().now()
-        
-        # LOG DE PULSO VITAL: Angulo actual crudo (para ver si se mueve)
-        if (now - self.last_log_time).nanoseconds / 1e9 > 1.0:
-             self.get_logger().info(f"[DIAGNOSTICO] ANGULO CRUDO ODOM: {math.degrees(theta):.2f} | Dist meta: {dist_to_final:.3f}m")
-        
+
         if self.current_target_index > self.last_target_index:
             self.last_target_index = self.current_target_index
             self.last_advance_time = now
@@ -555,15 +627,29 @@ class ControlTrayectoria(Node):
             # Normalizar ángulo
             while e_theta > math.pi: e_theta -= 2.0 * math.pi
             while e_theta < -math.pi: e_theta += 2.0 * math.pi
-            
-            # Aumentar ventana de tolerancia a ~8.5 grados para evitar saltar sobre la meta por el drift
-            if abs(e_theta) > 0.15:
-                v = 0.0
-                # Control P más suave para no sobre-reaccionar y vencer fricción
+
+            # Chequeo one-shot al recibir la ruta: si ya estamos suficientemente
+            # alineados (~17 deg), saltar rotacion pura y arrancar con Kelly & Diaz.
+            if self._check_initial_alignment:
+                self._check_initial_alignment = False
+                if abs(e_theta) < 0.30:
+                    self.pure_rotation_mode = False
+                    self.get_logger().info(
+                        f"Yaw inicial OK ({math.degrees(e_theta):.1f} deg), saltando rotacion pura."
+                    )
+
+            # Si seguimos en rotacion pura, control mixto:
+            # rotar mientras se traslada despacio para arrancar de inmediato.
+            if self.pure_rotation_mode and abs(e_theta) > 0.15:
+                # Traslacion parcial decreciente con el error angular:
+                # |e|=0 → v_arranque, |e|>=0.5 rad → v=0
+                v_arranque = 0.08
+                v = v_arranque * max(0.0, 1.0 - abs(e_theta) / 0.5)
+                # Control P de rotacion
                 w = 1.0 * e_theta
                 if abs(w) < 0.35:
                     w = 0.35 if w > 0 else -0.35
-            else:
+            elif self.pure_rotation_mode:
                 self.pure_rotation_mode = False # Termina la rotación, sigue Kelly & Diaz
         
 
