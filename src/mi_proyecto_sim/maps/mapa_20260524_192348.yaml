@@ -1,0 +1,7 @@
+image: mapa_20260524_192348.pgm
+mode: trinary
+resolution: 0.05000000074505806
+origin: [-1.9906840621875257, -1.9708559745157466, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196

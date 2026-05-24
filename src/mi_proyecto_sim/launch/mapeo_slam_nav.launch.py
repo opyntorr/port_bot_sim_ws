@@ -152,8 +152,6 @@ def generate_launch_description():
 
     # =========================================================
     # ODOM + TF FORWARDER
-    # /odom_raw -> /odom y /tf_raw -> /tf (con ruido en 0).
-    # Sin este nodo SLAM no tiene la cadena TF odom -> base_footprint.
     # =========================================================
     odom_forwarder = Node(
         package='mi_proyecto_sim',
@@ -172,7 +170,10 @@ def generate_launch_description():
     )
 
     # =========================================================
-    # TELEOP XBOX
+    # ARGUMENTOS DE LAUNCH
+    # =========================================================
+        # =========================================================
+    # CONFIGURACION COMUN (SLAM, RViz, Teleop)
     # =========================================================
     joy_node = Node(
         package='joy',
@@ -193,10 +194,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    # =========================================================
-    # SLAM TOOLBOX (online async, modo mapping)
-    # Consume /scan_filtered del filtro de LiDAR.
-    # =========================================================
     filtro_lidar_node = Node(
         package='mi_proyecto_sim',
         executable='filtro_lidar.py',
@@ -205,7 +202,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
-    # TimerAction(5s): margen para que LiDAR/odom publiquen antes del primer scan.
     slam_toolbox_launch = TimerAction(
         period=5.0,
         actions=[
@@ -218,15 +214,12 @@ def generate_launch_description():
                 ),
                 launch_arguments={
                     'slam_params_file': slam_params,
-                    'use_sim_time': 'true',
+                    'use_sim_time': True,
                 }.items(),
             )
         ],
     )
 
-    # =========================================================
-    # VISUALIZACION
-    # =========================================================
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -236,20 +229,27 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
-    return LaunchDescription([
+    # =========================================================
+    # GRUPO SIMULACION (Solo si use_sim == true)
+    # =========================================================
         set_env,
         plugin_env,
         gui_fov_env,
         gazebo,
         puente,
-        robot_state_publisher,
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            parameters=[{
+                'use_sim_time': True,
+                'robot_description': ParameterValue(
+                    Command(['xacro ', xacro_file, ' use_gazebo:=true']),
+                    value_type=str,
+                ),
+            }],
+        ),
         spawner,
         odom_forwarder,
-        joy_node,
-        teleop,
-        filtro_lidar_node,
-        slam_toolbox_launch,
-        rviz_node,
         seq_1,
         seq_2,
         seq_3,

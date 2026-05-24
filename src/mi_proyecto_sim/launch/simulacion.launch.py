@@ -11,7 +11,8 @@ from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.parameter_descriptions import ParameterFile
 
 def generate_launch_description():
-    pkg_sim = get_package_share_directory('mi_proyecto_sim')
+
+        pkg_sim = get_package_share_directory('mi_proyecto_sim')
 
     # Backend de SLAM: 'slam_toolbox' (default, comportamiento original) o
     # 'cartographer' (Cartographer en localization mode con prior del dron).
@@ -298,7 +299,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'slam_params_file': os.path.join(pkg_sim, 'config', 'mapper_params_online_async.yaml'),
-            'use_sim_time': 'true',
+            'use_sim_time': True,
         }.items(),
         condition=is_slam_toolbox,
     )
@@ -312,7 +313,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'pbstream_file': os.path.join(maps_dir, 'mapa_mision.pbstream'),
-            'use_sim_time': 'true',
+            'use_sim_time': True,
         }.items(),
         condition=is_cartographer,
     )# Nodo de Planificación de Ruta
@@ -506,36 +507,25 @@ def generate_launch_description():
     )
 
     # Empaquetar y lanzar todo simultaneamente
-    return LaunchDescription([
-        slam_backend_arg,
-        limpiar_artefactos,
+
         set_env,
         plugin_env,
         gui_fov_env,
         gazebo,
         puente,
-        visor_dron,
-        visor_carrito,
-        robot_state_publisher,
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            parameters=[{
+                'use_sim_time': True,
+                'robot_description': ParameterValue(
+                    Command(['xacro ', xacro_file, ' use_gazebo:=true']),
+                    value_type=str,
+                ),
+            }],
+        ),
         spawner,
         spawner_dron,
-        rviz_node,
-        joy_node,
-        teleop,
-        detector_aruco_node,
-
-        filtro_lidar_node,
-        optitrack_sim,
-        pose_fuser,
-        pid_controller,
-        plotter,
-        mision,
-        handler_mision,
-        rrt_y_slam_handler,
-        rosbridge_server,
-        foxglove_bridge_node,
-        web_video_server_node,
-        odom_noise_node,
         seq_1,
         seq_2,
         seq_3,
