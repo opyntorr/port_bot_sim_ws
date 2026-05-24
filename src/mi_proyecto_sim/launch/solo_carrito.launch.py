@@ -85,7 +85,7 @@ def generate_launch_description():
         package='rqt_image_view',
         executable='rqt_image_view',
         name='image_view_carrito',
-        arguments=['/cam_1/image'],
+        arguments=['/cam_1/image_aruco'],
         output='screen',
     )
 

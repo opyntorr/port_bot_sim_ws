@@ -131,7 +131,7 @@ class ControlTrayectoria(Node):
         self.repulsion_y = 0.0
         self.obstaculo_cerca = False
         self.peligro_frontal = False
-        self.min_dist_frontal = 1.0
+        self.min_dist_frontal = 1.5 # Ampliado a 1.5 para poder medir hasta 1.0m
         self.umbral_frontal = 0.35 
         self.umbral_lateral = 0.25 
         
@@ -280,7 +280,7 @@ class ControlTrayectoria(Node):
         rep_x = 0.0
         rep_y = 0.0
         
-        self.min_dist_frontal = 1.0
+        self.min_dist_frontal = 5.0
         num_invalidos = 0
         
         self.fuerza_izq = 0.0
@@ -525,12 +525,16 @@ class ControlTrayectoria(Node):
                 
             dt = 0.05 # Lazo a 20Hz
             
-            # 1. Rotación: centrar marker en la imagen
+            # 1. Rotación: centrar marker en la imagen (Agresivo para mantener el objetivo a la vista)
             err_x = (self.img_w / 2.0) - self.marker_cx
             self.vs_w_integral += err_x * dt
             self.vs_w_integral = max(-100.0, min(100.0, self.vs_w_integral)) # anti-windup
-            w_cmd = (err_x * 0.003) + (self.vs_w_integral * 0.001)
-            cmd.angular.z = max(min(w_cmd, 0.4), -0.4)
+            
+            # Aumentamos aún más la ganancia Proporcional e Integral (Rotación muy agresiva)
+            w_cmd = (err_x * 0.010) + (self.vs_w_integral * 0.004)
+            
+            # Aumentamos la velocidad máxima de rotación a 1.2
+            cmd.angular.z = max(min(w_cmd, 1.2), -1.2)
             
             # 2. Strafe lateral: corregir asimetría para lograr perpendicularidad
             # Asimetría > 0 -> lado der más grande -> robot a la derecha -> strafe izq (+y)
@@ -558,8 +562,8 @@ class ControlTrayectoria(Node):
             else:
                 cmd.linear.x = 0.0
             
-            # 4. Condición de Paro: Distancia correcta (LiDAR), marker centrado y asimetría pequeña
-            if abs(dist_err) < 0.05 and abs(err_x) < 25 and abs(self.marker_asymmetry) < 0.08:
+            # 4. Condición de Paro: Distancia correcta (LiDAR), marker MUY centrado y asimetría mínima
+            if abs(dist_err) < 0.05 and abs(err_x) < 15 and abs(self.marker_asymmetry) < 0.05:
                 cmd.linear.x = 0.0
                 cmd.linear.y = 0.0
                 cmd.angular.z = 0.0
@@ -620,13 +624,22 @@ class ControlTrayectoria(Node):
         # 5. Calcular errores
         e_x = x_d - x_c
         e_y = y_d - y_c
+        
+        # Velocidad Dinamica basada en Lidar Frontal
+        # Aumentamos la velocidad hasta 0.7 m/s si hay espacio libre (>0.5m)
+        v_dinamica = self.v_max
+        if self.min_dist_frontal > 0.5:
+            # Rango: 0.5m -> factor 0.0, 1.0m -> factor 1.0
+            factor = min(1.0, (self.min_dist_frontal - 0.5) / 0.5)
+            v_dinamica = self.v_max + factor * (0.7 - self.v_max)
+            
         # Para hacer el seguimiento más dinamico, calculamos una velocidad de feedforward hacia el objetivo
         # Si fueramos un tracker puro en el tiempo, estas serían las derivadas de la trayectoria, 
         # pero para seguimiento espacial de puntos (Path Tracking), las definimos apuntando al objetivo.
         dist_to_target = math.hypot(e_x, e_y)
         if dist_to_target > 0:
-            v_ref_x = self.v_max * (e_x / dist_to_target)
-            v_ref_y = self.v_max * (e_y / dist_to_target)
+            v_ref_x = v_dinamica * (e_x / dist_to_target)
+            v_ref_y = v_dinamica * (e_y / dist_to_target)
         else:
             v_ref_x = 0.0
             v_ref_y = 0.0
@@ -703,7 +716,7 @@ class ControlTrayectoria(Node):
         
 
         # 5. Saturación de control
-        v = max(min(v, self.v_max), -self.v_max)
+        v = max(min(v, v_dinamica), -v_dinamica)
         w = max(min(w, self.w_max), -self.w_max)
         # 6. SUAVIZADO: Más alto = más reactivo (0.1 = muy lento, 1.0 = instantáneo)
         alpha_v = 0.8 
