@@ -73,6 +73,7 @@ class ControlTrayectoria(Node):
         self.ruta_completada = False
         self.pure_rotation_mode = False
         self._check_initial_alignment = False  # Chequeo one-shot al recibir la ruta
+        self.rot_integral = 0.0 # Acumulador integral para rotación pura
         self.visual_search_mode = False
         self.visual_servo_mode = False
         self.goal_yaw = None  # Orientacion objetivo (se extrae del ultimo punto del Path)
@@ -196,6 +197,7 @@ class ControlTrayectoria(Node):
         self.ruta_completada = False
         self.pure_rotation_mode = True  # Iniciar cada nueva ruta girando hacia el objetivo
         self._check_initial_alignment = True  # One-shot: si ya hay alineacion, saltar pure_rotation
+        self.rot_integral = 0.0 # Reset del integrador
         self.visual_search_mode = False
         self.visual_servo_mode = False
         self.terminal_approach_mode = False
@@ -505,20 +507,28 @@ class ControlTrayectoria(Node):
             strafe_cmd = self.marker_asymmetry * 0.5
             cmd.linear.y = max(min(strafe_cmd, 0.15), -0.15)
             
-            # 3. Avance: controlar distancia (área)
-            area_objetivo = 18000
-            area_err = area_objetivo - self.marker_area
-            # Control P de velocidad (avanza más despacio al acercarse)
-            v_cmd = area_err * 0.00001
-            cmd.linear.x = max(min(v_cmd, 0.12), 0.03) # Velocidad min para no atascarse
+            # 3. Avance: controlar distancia con LiDAR (más robusto que el área en píxeles)
+            distancia_objetivo = 0.25 # Queremos estacionarnos a 25 cm del cubo
+            dist_err = self.min_dist_frontal - distancia_objetivo
             
-            # 4. Condición de Paro: Área grande, marker centrado y asimetría pequeña
-            if self.marker_area > (area_objetivo * 0.9) and abs(err_x) < 30 and abs(self.marker_asymmetry) < 0.08:
+            # Control P de velocidad (avanza más despacio al acercarse)
+            v_cmd = dist_err * 0.4
+            
+            # Aplicar banda muerta de velocidad para no atascarse
+            if dist_err > 0.05:
+                cmd.linear.x = max(min(v_cmd, 0.12), 0.03)
+            elif dist_err < -0.05:
+                cmd.linear.x = max(min(v_cmd, -0.03), -0.12)
+            else:
+                cmd.linear.x = 0.0
+            
+            # 4. Condición de Paro: Distancia correcta (LiDAR), marker centrado y asimetría pequeña
+            if abs(dist_err) < 0.05 and abs(err_x) < 30 and abs(self.marker_asymmetry) < 0.08:
                 cmd.linear.x = 0.0
                 cmd.linear.y = 0.0
                 cmd.angular.z = 0.0
                 self.cmd_pub.publish(cmd)
-                self.get_logger().info(f"Parqueo completado. Asimetria final: {self.marker_asymmetry:.3f}")
+                self.get_logger().info(f"Parqueo completado. Dist: {self.min_dist_frontal:.2f}m, Asimetria: {self.marker_asymmetry:.3f}")
                 self.ruta_completada = True
                 return
 
@@ -569,8 +579,10 @@ class ControlTrayectoria(Node):
             self.last_advance_time = now
         else:
             elapsed = (now - self.last_advance_time).nanoseconds / 1e9
-            if elapsed > 4.0 and not near_final_goal:
-                self.get_logger().warn("Bloqueo detectado! No se avanza de waypoint en 4s. Solicitando replanificacion...")
+            # Limite de watchdog dinamico: 10s en rotacion pura, 5s en seguimiento normal
+            timeout = 10.0 if self.pure_rotation_mode else 5.0
+            if elapsed > timeout and not near_final_goal:
+                self.get_logger().warn(f"Bloqueo detectado! No se avanza de waypoint en {timeout}s. Solicitando replanificacion...")
                 self.replan_pub.publish(Empty())
                 self.last_advance_time = now # Reset para no saturar mientras llega la nueva ruta
 
@@ -645,12 +657,18 @@ class ControlTrayectoria(Node):
                 # |e|=0 → v_arranque, |e|>=0.5 rad → v=0
                 v_arranque = 0.08
                 v = v_arranque * max(0.0, 1.0 - abs(e_theta) / 0.5)
-                # Control P de rotacion
-                w = 1.0 * e_theta
+                
+                # Control PI de rotacion (friccion en hardware real)
+                dt = 0.05 # Lazo a ~20Hz
+                self.rot_integral += e_theta * dt
+                self.rot_integral = max(-1.0, min(1.0, self.rot_integral)) # Limite anti-windup
+                
+                w = 1.0 * e_theta + 0.2 * self.rot_integral
                 if abs(w) < 0.35:
                     w = 0.35 if w > 0 else -0.35
             elif self.pure_rotation_mode:
                 self.pure_rotation_mode = False # Termina la rotación, sigue Kelly & Diaz
+                self.rot_integral = 0.0
         
 
         # 5. Saturación de control
