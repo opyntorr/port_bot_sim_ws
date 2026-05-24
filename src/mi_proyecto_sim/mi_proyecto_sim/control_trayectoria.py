@@ -76,6 +76,9 @@ class ControlTrayectoria(Node):
         self.rot_integral = 0.0 # Acumulador integral para rotación pura
         self.visual_search_mode = False
         self.visual_servo_mode = False
+        self.vs_v_integral = 0.0
+        self.vs_w_integral = 0.0
+        self.vs_strafe_integral = 0.0
         self.goal_yaw = None  # Orientacion objetivo (se extrae del ultimo punto del Path)
 
         # Fase de aproximacion terminal (go-to-point sobre el centro del robot)
@@ -83,8 +86,8 @@ class ControlTrayectoria(Node):
         # la meta (Kelly & Diaz controla el punto desplazado x_c y siempre deja
         # al centro h metros corto del waypoint final).
         self.terminal_approach_mode = False
-        self.terminal_threshold = 0.60    # m, entra a terminal cuando el centro esta a esta dist
-        self.terminal_arrival = 0.15      # m, salta a visual_search al llegar a esta dist
+        self.terminal_threshold = 0.80    # m, entra a terminal cuando el centro esta a esta dist
+        self.terminal_arrival = 0.60      # m, salta a visual_search al llegar a esta dist
         self.terminal_yaw_tol = 0.10      # rad, tolerancia de alineacion al goal
         self.k_v_terminal = 0.6           # ganancia P sobre distancia
         self.v_max_terminal = 0.12        # m/s, mas suave que v_max para precision
@@ -200,6 +203,9 @@ class ControlTrayectoria(Node):
         self.rot_integral = 0.0 # Reset del integrador
         self.visual_search_mode = False
         self.visual_servo_mode = False
+        self.vs_v_integral = 0.0
+        self.vs_w_integral = 0.0
+        self.vs_strafe_integral = 0.0
         self.terminal_approach_mode = False
 
     def cam_callback(self, msg):
@@ -211,24 +217,36 @@ class ControlTrayectoria(Node):
             
         self.img_w = cv_image.shape[1]
         
-        if ids is not None and 0 in ids: # El cubo meta usa el ID 0
-            idx = list(ids.flatten()).index(0)
-            esquinas = corners[idx][0]
-            # Centroide del ArUco
-            self.marker_cx = np.mean(esquinas[:, 0])
-            # Lados para área y asimetría
-            lado_sup = np.linalg.norm(esquinas[0] - esquinas[1])
-            lado_der = np.linalg.norm(esquinas[1] - esquinas[2])
-            lado_inf = np.linalg.norm(esquinas[2] - esquinas[3])
-            lado_izq = np.linalg.norm(esquinas[3] - esquinas[0])
-            self.marker_area = lado_sup * lado_der
+        # Dibujar markers detectados
+        if ids is not None:
+            cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
             
-            promedio = (lado_der + lado_izq) / 2.0
-            self.marker_asymmetry = (lado_der - lado_izq) / promedio if promedio > 0 else 0.0
+            if 0 in ids: # El cubo meta usa el ID 0
+                idx = list(ids.flatten()).index(0)
+                esquinas = corners[idx][0]
+                # Centroide del ArUco
+                self.marker_cx = np.mean(esquinas[:, 0])
+                # Lados para área y asimetría
+                lado_sup = np.linalg.norm(esquinas[0] - esquinas[1])
+                lado_der = np.linalg.norm(esquinas[1] - esquinas[2])
+                lado_inf = np.linalg.norm(esquinas[2] - esquinas[3])
+                lado_izq = np.linalg.norm(esquinas[3] - esquinas[0])
+                self.marker_area = lado_sup * lado_der
+                
+                promedio = (lado_der + lado_izq) / 2.0
+                self.marker_asymmetry = (lado_der - lado_izq) / promedio if promedio > 0 else 0.0
+            else:
+                self.marker_cx = None
+                self.marker_area = None
+                self.marker_asymmetry = None
         else:
             self.marker_cx = None
             self.marker_area = None
             self.marker_asymmetry = None
+            
+        # Mostrar la imagen
+        cv2.imshow("Camara Carrito (ArUco)", cv_image)
+        cv2.waitKey(1)
 
     def odom_callback(self, msg):
         """Lectura de Odometría estándar Yahboom (msg.pose.pose)."""
@@ -483,6 +501,9 @@ class ControlTrayectoria(Node):
                 self.get_logger().info("¡ArUco Encontrado! Pasando a modo Visual Servoing.")
                 self.visual_search_mode = False
                 self.visual_servo_mode = True
+                self.vs_v_integral = 0.0
+                self.vs_w_integral = 0.0
+                self.vs_strafe_integral = 0.0
             else:
                 # Rotar sobre su eje hasta encontrarlo
                 cmd.angular.z = 0.6
@@ -497,33 +518,43 @@ class ControlTrayectoria(Node):
                 self.visual_servo_mode = False
                 return
                 
+            dt = 0.05 # Lazo a 20Hz
+            
             # 1. Rotación: centrar marker en la imagen
             err_x = (self.img_w / 2.0) - self.marker_cx
-            w_cmd = err_x * 0.003
+            self.vs_w_integral += err_x * dt
+            self.vs_w_integral = max(-100.0, min(100.0, self.vs_w_integral)) # anti-windup
+            w_cmd = (err_x * 0.003) + (self.vs_w_integral * 0.001)
             cmd.angular.z = max(min(w_cmd, 0.4), -0.4)
             
             # 2. Strafe lateral: corregir asimetría para lograr perpendicularidad
             # Asimetría > 0 -> lado der más grande -> robot a la derecha -> strafe izq (+y)
-            strafe_cmd = self.marker_asymmetry * 0.5
+            self.vs_strafe_integral += self.marker_asymmetry * dt
+            self.vs_strafe_integral = max(-1.0, min(1.0, self.vs_strafe_integral)) # anti-windup
+            strafe_cmd = (self.marker_asymmetry * 0.5) + (self.vs_strafe_integral * 0.1)
             cmd.linear.y = max(min(strafe_cmd, 0.15), -0.15)
             
             # 3. Avance: controlar distancia con LiDAR (más robusto que el área en píxeles)
-            distancia_objetivo = 0.25 # Queremos estacionarnos a 25 cm del cubo
+            distancia_objetivo = 0.3# Queremos estacionarnos a 25 cm del cubo
             dist_err = self.min_dist_frontal - distancia_objetivo
             
-            # Control P de velocidad (avanza más despacio al acercarse)
-            v_cmd = dist_err * 0.4
+            self.vs_v_integral += dist_err * dt
+            self.vs_v_integral = max(-0.5, min(0.5, self.vs_v_integral)) # anti-windup
+            v_cmd = (dist_err * 0.4) + (self.vs_v_integral * 0.15)
             
-            # Aplicar banda muerta de velocidad para no atascarse
-            if dist_err > 0.05:
-                cmd.linear.x = max(min(v_cmd, 0.12), 0.03)
-            elif dist_err < -0.05:
-                cmd.linear.x = max(min(v_cmd, -0.03), -0.12)
+            # Tolerancia de paro para avance
+            if abs(dist_err) > 0.05:
+                # FASE 1 y 2: Primero centrar, luego avanzar. 
+                # Solo permitimos avance si el ArUco está relativamente centrado frente a la cámara.
+                if abs(err_x) < 50 and abs(self.marker_asymmetry) < 0.20:
+                    cmd.linear.x = max(min(v_cmd, 0.12), -0.12)
+                else:
+                    cmd.linear.x = 0.0
             else:
                 cmd.linear.x = 0.0
             
             # 4. Condición de Paro: Distancia correcta (LiDAR), marker centrado y asimetría pequeña
-            if abs(dist_err) < 0.05 and abs(err_x) < 30 and abs(self.marker_asymmetry) < 0.08:
+            if abs(dist_err) < 0.05 and abs(err_x) < 25 and abs(self.marker_asymmetry) < 0.08:
                 cmd.linear.x = 0.0
                 cmd.linear.y = 0.0
                 cmd.angular.z = 0.0
@@ -554,15 +585,10 @@ class ControlTrayectoria(Node):
             cmd.linear.x = max(min(v_x, self.v_max_terminal), -self.v_max_terminal)
             cmd.linear.y = max(min(v_y, self.v_max_terminal), -self.v_max_terminal)
 
-            if self.goal_yaw is not None:
-                e_theta = self.goal_yaw - theta
-                while e_theta > math.pi: e_theta -= 2.0 * math.pi
-                while e_theta < -math.pi: e_theta += 2.0 * math.pi
-                w = self.k_w_terminal * e_theta
-                if 0 < abs(w) < self.w_min_terminal: w = self.w_min_terminal if w > 0 else -self.w_min_terminal
-                cmd.angular.z = max(min(w, self.w_max), -self.w_max)
-            else:
-                cmd.angular.z = 0.0
+            # En modo terminal desactivamos la rotación para no perder de vista el ArUco
+            # (dejamos que el visual servoing se encargue de la orientación final).
+            # Además, rotar con ruedas mecanum en Gazebo causa deriva hacia adelante.
+            cmd.angular.z = 0.0
 
             self.cmd_pub.publish(cmd)
             self.v_prev = cmd.linear.x
