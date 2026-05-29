@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 import cv2
@@ -44,6 +45,9 @@ def main():
     ap.add_argument("--output", required=True, type=Path)
     ap.add_argument("--ppm", type=float, default=500.0)
     ap.add_argument("--fov-v-deg", type=float, default=43.0)
+    ap.add_argument("--cal-dir", type=Path, default=None,
+                    help="Directory with K.npy, D.npy, image_size.npy (tello_calibration.npz/). "
+                         "Undistorts every tile and overrides --fov-v-deg with the value derived from K.")
     ap.add_argument("--yaw-sign", type=float, default=1.0,
                     help="Per-tile yaw multiplier applied to estimate_tile_yaw output. "
                          "+1 (default) correctly corrects the drone heading tilt. "
@@ -119,6 +123,18 @@ def main():
     print(f"[stitch_pose] {len(tiles)} tiles, "
           f"yaw range [{min(t.yaw_deg for t in tiles):+.2f}°, {max(t.yaw_deg for t in tiles):+.2f}°], "
           f"z range [{min(t.z for t in tiles):.3f}, {max(t.z for t in tiles):.3f}]m")
+
+    # 1b) Camera calibration: undistort tiles and derive fov_v_deg from K.
+    if args.cal_dir is not None:
+        K_mat = np.load(args.cal_dir / "K.npy")
+        D_mat = np.load(args.cal_dir / "D.npy")
+        for t in tiles:
+            t.img = cv2.undistort(t.img, K_mat, D_mat)
+        fy = float(K_mat[1, 1])
+        sample_h = tiles[0].img_h
+        cfg.fov_v_deg = math.degrees(2.0 * math.atan(sample_h / (2.0 * fy)))
+        print(f"[stitch_pose] --cal-dir: undistorted {len(tiles)} tiles, "
+              f"fy={fy:.2f} px → fov_v_deg={cfg.fov_v_deg:.2f}°")
 
     # 2) Canvas.
     extent = world_extent(tiles)
@@ -282,6 +298,47 @@ def main():
     if args.debug:
         grid_layer = (prob_stack[3] * 255).clip(0, 255).astype(np.uint8)
         cv2.imwrite(str(out / "landmark_grid.png"), grid_layer)
+
+    # 8) ArUco localization.
+    from .aruco_locate import locate_aruco_markers, draw_aruco_overlay
+    import json as _json
+
+    aruco_markers = locate_aruco_markers(tiles, placed, spec, debug=args.debug)
+    if aruco_markers:
+        aruco_data = {
+            "ppm": cfg.ppm,
+            "markers": [
+                {
+                    "id": m.id,
+                    "world_x": round(m.world_x, 4),
+                    "world_y": round(m.world_y, 4),
+                    "canvas_x": round(m.canvas_x, 1),
+                    "canvas_y": round(m.canvas_y, 1),
+                    "n_detections": m.n_detections,
+                    "tiles_seen": m.tiles_seen,
+                }
+                for m in aruco_markers
+            ],
+        }
+        with open(out / "aruco_markers.json", "w") as f:
+            _json.dump(aruco_data, f, indent=2)
+        cv2.imwrite(
+            str(out / (args.map_name + "_aruco.png")),
+            draw_aruco_overlay(pgm_img, aruco_markers, crop_offset=crop_offset),
+        )
+        cv2.imwrite(
+            str(out / "mosaic_aruco.png"),
+            draw_aruco_overlay(mosaic, aruco_markers, crop_offset=crop_offset),
+        )
+        print(
+            "[stitch_pose] ArUco markers: "
+            + ", ".join(
+                f"id{m.id}=({m.world_x:.3f},{m.world_y:.3f}) n={m.n_detections}"
+                for m in aruco_markers
+            )
+        )
+    else:
+        print("[stitch_pose] No ArUco markers detected in any tile.")
 
     print(f"[stitch_pose] Done. Outputs in {out}")
 
