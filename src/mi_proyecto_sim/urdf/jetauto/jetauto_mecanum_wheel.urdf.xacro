@@ -1,0 +1,119 @@
+<?xml version="1.0"?>
+<!--
+  JetAuto mecanum wheel for SIMULATION (Ignition / gz-sim), friction-based with
+  physically-modeled rollers (rosmaster_x3-style: 12 spherical passive rollers per
+  wheel at +-45 deg). Motion emerges from wheel-vs-roller-vs-ground friction, NOT
+  from a kinematic plugin -> this is what makes the holonomic strafe physical.
+
+  Geometry comes from the REAL JetAuto (Orin jetauto_description / jetauto_car.urdf.xacro):
+      wheel radius = 0.04825 m (Ø 96.5 mm, the kinematic radius used by mecanum.py),
+      track/wheelbase from the real wheel joint origins (±0.097397, ±0.086125, 0.04508).
+
+  Frame convention (kept identical to the proven rosmaster_x3 roller macro):
+      wheel link spins about +Y (axis 0 1 0); rollers sit on the rim in the X-Z plane.
+      The JetAuto wheel STL native axle is +Z, so visual rpy = (pi/2,0,0) aligns it to Y.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- wheel geometry (REAL JetAuto) -->
+  <xacro:property name="wheel_radius"     value="0.04825" />
+  <xacro:property name="wheel_width"      value="0.04167" />
+  <xacro:property name="wheel_mass"       value="0.05" />
+  <xacro:property name="roller_radius"    value="0.0096" />
+  <xacro:property name="roller_mass"      value="0.004" />
+  <!-- real wheel joint origins (base_link frame) -->
+  <xacro:property name="wheel_xoff"       value="0.097397" />   <!-- longitudinal half -->
+  <xacro:property name="wheel_yoff"       value="0.086125" />   <!-- lateral half -->
+  <xacro:property name="wheel_zoff"       value="0.04508" />    <!-- wheel-center height over base_link -->
+  <xacro:property name="mesh_dir"         value="file://$(find mi_proyecto_sim)/meshes/jetauto" />
+
+  <!-- One passive roller (sphere) at angle theta around the rim, rolling axis tilted by alpha. -->
+  <xacro:macro name="jetauto_roller" params="prefix side index theta alpha">
+    <link name="${prefix}${side}_roller_${index}_link">
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="${roller_radius}"/>
+        </geometry>
+        <max_contacts>2</max_contacts>
+      </collision>
+      <inertial>
+        <mass value="${roller_mass}"/>
+        <inertia ixx="${2.0/5.0 * roller_mass * roller_radius * roller_radius}" ixy="0" ixz="0"
+                 iyy="${2.0/5.0 * roller_mass * roller_radius * roller_radius}" iyz="0"
+                 izz="${2.0/5.0 * roller_mass * roller_radius * roller_radius}"/>
+      </inertial>
+    </link>
+
+    <joint name="${prefix}${side}_roller_${index}_joint" type="continuous">
+      <parent link="${prefix}${side}_wheel_link"/>
+      <child link="${prefix}${side}_roller_${index}_link"/>
+      <axis xyz="${sin(alpha)} ${cos(alpha)} 0"/>
+      <origin xyz="${(wheel_radius - roller_radius)*sin(theta)} 0 ${(wheel_radius - roller_radius)*cos(theta)}" rpy="0 ${theta} 0"/>
+      <dynamics damping="0.001" friction="0.001"/>
+    </joint>
+
+    <gazebo reference="${prefix}${side}_roller_${index}_link">
+      <mu1>1.0</mu1>
+      <mu2>1.0</mu2>
+      <kp>100000.0</kp>
+      <kd>10.0</kd>
+      <minDepth>0.001</minDepth>
+      <maxVel>1.0</maxVel>
+      <self_collide>false</self_collide>
+      <max_contacts>2</max_contacts>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- A full driven mecanum wheel (continuous joint about Y) + its 12 rollers.
+       side: front_left|front_right|back_left|back_right
+       mesh: per-corner STL basename (e.g. wheel_left_front_link)
+       x_reflect/y_reflect: +-1 placement; alpha sign = x_reflect*y_reflect (X config). -->
+  <xacro:macro name="jetauto_mecanum_wheel" params="prefix side mesh x_reflect y_reflect">
+    <link name="${prefix}${side}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_dir}/${mesh}.stl"/>
+        </geometry>
+        <material name="wheel_black">
+          <color rgba="0.15 0.15 0.15 1.0"/>
+        </material>
+      </visual>
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="${wheel_mass}"/>
+        <inertia
+          ixx="${(wheel_mass/12.0) * (3*wheel_radius*wheel_radius + wheel_width*wheel_width)}" ixy="0" ixz="0"
+          iyy="${(wheel_mass/2.0) * (wheel_radius*wheel_radius)}" iyz="0"
+          izz="${(wheel_mass/12.0) * (3*wheel_radius*wheel_radius + wheel_width*wheel_width)}"/>
+      </inertial>
+    </link>
+
+    <joint name="${prefix}${side}_wheel_joint" type="continuous">
+      <axis xyz="0 1 0"/>
+      <parent link="${prefix}base_link"/>
+      <child link="${prefix}${side}_wheel_link"/>
+      <origin xyz="${x_reflect*wheel_xoff} ${y_reflect*wheel_yoff} ${wheel_zoff}" rpy="0 0 0"/>
+      <dynamics damping="0.05" friction="0.01"/>
+    </joint>
+
+    <gazebo reference="${prefix}${side}_wheel_link">
+      <self_collide>false</self_collide>
+    </gazebo>
+
+    <xacro:property name="alpha" value="${(x_reflect * y_reflect) * (pi / 4)}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="0"  theta="0.0"        alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="1"  theta="${pi/6}"    alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="2"  theta="${2*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="3"  theta="${3*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="4"  theta="${4*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="5"  theta="${5*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="6"  theta="${6*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="7"  theta="${7*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="8"  theta="${8*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="9"  theta="${9*pi/6}"  alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="10" theta="${10*pi/6}" alpha="${alpha}" />
+    <xacro:jetauto_roller prefix="${prefix}" side="${side}" index="11" theta="${11*pi/6}" alpha="${alpha}" />
+  </xacro:macro>
+</robot>

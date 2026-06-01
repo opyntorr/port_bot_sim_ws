@@ -1,0 +1,120 @@
+<?xml version="1.0"?>
+<!--
+  JetAuto base (chassis) for SIMULATION. Geometry/inertia/mesh placement copied
+  verbatim from the REAL robot description (Orin jetauto_description/urdf/jetauto_car.urdf.xacro):
+      base_link mass 1.6 kg, body box 0.297 x 0.145 x 0.11255,
+      decorative back_shell / mic / speaker shells (fixed, just for the JetAuto look).
+  base_footprint -> base_link with base_joint at z=0 (same as the real URDF).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:property name="base_link_mass" value="1.6" />
+  <xacro:property name="base_link_w"    value="0.297" />
+  <xacro:property name="base_link_h"    value="0.145" />
+  <xacro:property name="base_link_d"    value="0.11255" />
+  <xacro:property name="mesh_dir"       value="file://$(find mi_proyecto_sim)/meshes/jetauto" />
+
+  <xacro:macro name="jetauto_base" params="prefix">
+
+    <link name="${prefix}base_footprint"/>
+
+    <joint name="${prefix}base_joint" type="fixed">
+      <parent link="${prefix}base_footprint"/>
+      <child  link="${prefix}base_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <link name="${prefix}base_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_dir}/base_link.stl"/>
+        </geometry>
+        <material name="jetauto_green">
+          <color rgba="0.1 0.55 0.1 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="${base_link_w/2.0 - 0.14810} 0 ${0.126437/2 + 0.02362364}" rpy="0 0 0"/>
+        <geometry>
+          <box size="${base_link_w} ${base_link_h} ${base_link_d}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <origin xyz="${base_link_w/2.0 - 0.14810} 0 ${0.126437/2 + 0.02362364}" rpy="0 0 0"/>
+        <mass value="${base_link_mass}"/>
+        <inertia
+          ixx="${(base_link_mass/12.0) * (base_link_h*base_link_h + base_link_d*base_link_d)}" ixy="0" ixz="0"
+          iyy="${(base_link_mass/12.0) * (base_link_w*base_link_w + base_link_d*base_link_d)}" iyz="0"
+          izz="${(base_link_mass/12.0) * (base_link_w*base_link_w + base_link_h*base_link_h)}"/>
+      </inertial>
+    </link>
+
+    <gazebo reference="${prefix}base_link">
+      <visual>
+        <material>
+          <ambient>0.1 0.55 0.1 1</ambient>
+          <diffuse>0.1 0.55 0.1 1</diffuse>
+        </material>
+      </visual>
+    </gazebo>
+
+    <!-- ===== decorative shells (fixed, no collision impact on driving) ===== -->
+    <link name="${prefix}back_shell_link">
+      <inertial>
+        <origin xyz="-1.22838595456587E-05 0.00218574826309681 -0.0500522861933898" rpy="0 0 0"/>
+        <mass value="0.0663478534899862"/>
+        <inertia ixx="5.65277934912267E-05" ixy="-5.13394387877366E-11" ixz="-4.07561372273553E-11"
+                 iyy="4.33740893441632E-05" iyz="-5.43059341238134E-06" izz="6.86642544694324E-05"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${mesh_dir}/back_shell_link.stl"/></geometry>
+        <material name="shell_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}back_shell_joint" type="fixed">
+      <origin xyz="-0.076481 0 0.082796" rpy="-3.1416 0 1.5708"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}back_shell_link"/>
+    </joint>
+
+    <link name="${prefix}mic_link">
+      <inertial>
+        <origin xyz="7.37972827624667E-07 0.000380767498086923 -0.0010743560446495" rpy="0 0 0"/>
+        <mass value="0.0234232570822793"/>
+        <inertia ixx="1.59705800233789E-05" ixy="-5.64325349754072E-11" ixz="8.96027229707658E-11"
+                 iyy="2.23652963143563E-05" iyz="6.01204669252721E-08" izz="3.74624298483869E-05"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${mesh_dir}/mic_link.stl"/></geometry>
+        <material name="mic_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}mic_joint" type="fixed">
+      <origin xyz="-0.079228 -1.5532E-05 0.15861" rpy="0 0 1.5708"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}mic_link"/>
+    </joint>
+
+    <link name="${prefix}speaker_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.01"/>
+        <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${mesh_dir}/speaker_link.stl"/></geometry>
+        <material name="speaker_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}speaker_joint" type="fixed">
+      <origin xyz="-0.130292759618243 0 0.0549589364206024" rpy="0 0 0"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}speaker_link"/>
+    </joint>
+
+  </xacro:macro>
+</robot>

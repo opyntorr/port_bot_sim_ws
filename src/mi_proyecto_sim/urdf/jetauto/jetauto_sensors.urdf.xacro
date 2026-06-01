@@ -1,0 +1,168 @@
+<?xml version="1.0"?>
+<!--
+  JetAuto sensors for SIMULATION (Ignition gz-sim), matching the REAL robot:
+    - LiDAR   : RPLIDAR A1  -> /scan        in frame lidar_frame  (base_link->lidar_link->lidar_frame)
+    - IMU     : MPU-6050    -> /imu/data_raw in frame imu_link     (madgwick fuses -> /imu/data)
+    - Depth   : Astra Pro   -> /cam_1/*      (RGB used by the mission ArUco brain as /cam_1/image)
+  Mount poses copied from the real jetauto_description (lidar.urdf, lidar_a1.urdf, imu.urdf,
+  depth_camera.urdf). The depth-camera pan joint (real: revolute) is FIXED here (no servo in sim).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:property name="M_PI"     value="3.1415926535897931"/>
+  <xacro:property name="mesh_dir" value="file://$(find mi_proyecto_sim)/meshes/jetauto"/>
+
+  <xacro:macro name="jetauto_sensors" params="prefix">
+
+    <!-- ===================== LiDAR (RPLIDAR A1) ===================== -->
+    <link name="${prefix}lidar_link">
+      <inertial>
+        <origin xyz="-0.0157049024536227 0.000340793431659825 -0.0214732100882973" rpy="0 0 0"/>
+        <mass value="0.0522535578752524"/>
+        <inertia ixx="1.4542908499666E-05" ixy="4.8193721668021E-08" ixz="2.30575406031324E-07"
+                 iyy="1.85618648837978E-05" iyz="-1.29750110413905E-08" izz="3.10574357987674E-05"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${mesh_dir}/lidar_link.stl"/></geometry>
+        <material name="lidar_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}lidar_joint" type="fixed">
+      <origin xyz="0.0959394346777203 -1.03974386779226E-05 0.128396206697751" rpy="0 0 0"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}lidar_link"/>
+    </joint>
+
+    <!-- RPLIDAR A1: data frame is lidar_link rotated 180 deg about Z (matches real lidar_a1.urdf) -->
+    <link name="${prefix}lidar_frame"/>
+    <joint name="${prefix}lidar_frame_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 ${M_PI}"/>
+      <parent link="${prefix}lidar_link"/>
+      <child  link="${prefix}lidar_frame"/>
+    </joint>
+
+    <gazebo reference="${prefix}lidar_frame">
+      <sensor name="${prefix}lidar_a1" type="gpu_lidar">
+        <topic>scan</topic>
+        <update_rate>10</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <gz_frame_id>${prefix}lidar_frame</gz_frame_id>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>720</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159265</min_angle>
+              <max_angle>3.14159265</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.15</min>
+            <max>12.0</max>
+            <resolution>0.013</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.01</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+    </gazebo>
+
+    <!-- ===================== IMU (MPU-6050) ===================== -->
+    <link name="${prefix}imu_link">
+      <inertial>
+        <mass value="0.01"/>
+        <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+      </inertial>
+    </link>
+    <joint name="${prefix}imu_joint" type="fixed">
+      <origin xyz="${-(0.297 - 0.1481 - 0.064)} 0 ${0.125963557909225 - 0.045}" rpy="0 0 ${M_PI}"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}imu_link"/>
+    </joint>
+
+    <gazebo reference="${prefix}imu_link">
+      <sensor name="${prefix}imu_mpu6050" type="imu">
+        <topic>imu/data_raw</topic>
+        <update_rate>50</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <gz_frame_id>${prefix}imu_link</gz_frame_id>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
+    </gazebo>
+
+    <!-- ===================== Depth camera (Astra Pro) ===================== -->
+    <!-- Real mount: revolute pan joint at (0.0289, 0, 0.2021). Fixed here (no servo in sim). -->
+    <link name="${prefix}cam_1_link">
+      <inertial>
+        <origin xyz="0.000254340878565573 0.00268031633059271 -0.00569075323067275" rpy="0 0 0"/>
+        <mass value="0.227980406655671"/>
+        <inertia ixx="4.8473190489023E-05" ixy="8.29314946303069E-09" ixz="-5.0952649884666E-09"
+                 iyy="0.000408820027771005" iyz="-1.36580074559918E-07" izz="0.000429553467348926"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 1.57"/>
+        <geometry><mesh filename="${mesh_dir}/depth_camera_link.stl"/></geometry>
+        <material name="cam_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}cam_1_joint" type="fixed">
+      <origin xyz="0.0288581470059471 0 0.202093286991617" rpy="0 0 0"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}cam_1_link"/>
+    </joint>
+
+    <!-- optical frame: REP-103 camera optical convention (z fwd, x right, y down) -->
+    <link name="${prefix}cam_1_optical_frame"/>
+    <joint name="${prefix}cam_1_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="${-M_PI/2} 0 ${-M_PI/2}"/>
+      <parent link="${prefix}cam_1_link"/>
+      <child  link="${prefix}cam_1_optical_frame"/>
+    </joint>
+
+    <gazebo reference="${prefix}cam_1_link">
+      <sensor name="${prefix}cam_1" type="rgbd_camera">
+        <topic>cam_1</topic>
+        <update_rate>30</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <gz_frame_id>${prefix}cam_1_optical_frame</gz_frame_id>
+        <camera>
+          <horizontal_fov>1.0472</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>15.0</far>
+          </clip>
+        </camera>
+      </sensor>
+    </gazebo>
+
+  </xacro:macro>
+</robot>

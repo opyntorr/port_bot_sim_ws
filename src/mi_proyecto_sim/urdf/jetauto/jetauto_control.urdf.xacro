@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control + ign_ros2_control for the JetAuto sim.
+  The 4 mecanum wheels expose a VELOCITY command interface (the real robot commands
+  wheel SPEED, not torque -> velocity control is the faithful sim-to-real choice).
+  jetauto_chassis_sim.py turns /cmd_vel into the 4 wheel velocities (real mecanum.py
+  inverse kinematics) and publishes them to /velocity_controller/commands.
+  Roller joints are passive (not actuated) and are simulated by gz physics directly.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="jetauto_control" params="prefix">
+
+    <ros2_control name="JetautoIgnitionSystem" type="system">
+      <hardware>
+        <plugin>ign_ros2_control/IgnitionSystem</plugin>
+      </hardware>
+      <joint name="${prefix}front_left_wheel_joint">
+        <command_interface name="velocity"><param name="min">-30.0</param><param name="max">30.0</param></command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="${prefix}front_right_wheel_joint">
+        <command_interface name="velocity"><param name="min">-30.0</param><param name="max">30.0</param></command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="${prefix}back_left_wheel_joint">
+        <command_interface name="velocity"><param name="min">-30.0</param><param name="max">30.0</param></command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="${prefix}back_right_wheel_joint">
+        <command_interface name="velocity"><param name="min">-30.0</param><param name="max">30.0</param></command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </ros2_control>
+
+    <gazebo>
+      <plugin filename="ign_ros2_control-system" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+        <parameters>$(find mi_proyecto_sim)/config/jetauto_controllers.yaml</parameters>
+      </plugin>
+    </gazebo>
+
+  </xacro:macro>
+</robot>

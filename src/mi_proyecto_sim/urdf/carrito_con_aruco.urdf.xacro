@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<robot name="rosmaster_x3_aruco" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:include
+        filename="$(find yahboom_rosmaster_description)/urdf/robots/rosmaster_x3.urdf.xacro" />
+
+    <link name="techo_aruco_link">
+        <visual>
+            <geometry>
+                <box size="0.18 0.18 0.001" />
+            </geometry>
+        </visual>
+        <collision>
+            <geometry>
+                <box size="0.18 0.18 0.001" />
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1" />
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001" />
+        </inertial>
+    </link>
+
+    <gazebo reference="techo_aruco_link">
+        <visual>
+            <material>
+                <diffuse>1 1 1 1</diffuse>
+                <pbr>
+                    <metal>
+                        <albedo_map>file://$(find mi_proyecto_sim)/models/marcador_aruco/materials/textures/aruco4.png</albedo_map>
+                    </metal>
+                </pbr>
+            </material>
+        </visual>
+    </gazebo>
+
+    <joint name="aruco_base_joint" type="fixed">
+        <parent link="base_link" />
+        <child link="techo_aruco_link" />
+        <origin xyz="0 0 0.19" rpy="0 0 0" />
+    </joint>
+
+</robot>

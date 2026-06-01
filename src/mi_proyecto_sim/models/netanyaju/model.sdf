@@ -1,0 +1,38 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="netanyaju">
+    <static>true</static>
+    <link name="base_link">
+      
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://netanyaju/meshes/netanyaju_trian.obj</uri>
+            <scale>0.3 0.3 0.3</scale>
+          </mesh>
+        </geometry>
+        
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.5 0.5 0.5 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://netanyaju/meshes/texture_pbr_20250901.png</albedo_map>
+              <normal_map>model://netanyaju/meshes/texture_pbr_20250901_normal.png</normal_map>
+              <metalness_map>model://netanyaju/meshes/texture_pbr_20250901_metallic.png</metalness_map>
+              <roughness_map>model://netanyaju/meshes/texture_pbr_20250901_roughness.png</roughness_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>0.05 0.05 0.2</size> </box>
+        </geometry>
+      </collision>
+
+    </link>
+  </model>
+</sdf>

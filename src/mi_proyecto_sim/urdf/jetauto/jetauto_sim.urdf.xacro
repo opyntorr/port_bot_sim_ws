@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<!--
+  ===========================================================================
+  JetAuto SIMULATION robot (Ignition gz-sim) — sim-to-real of the real JetAuto.
+  ===========================================================================
+  Built from the REAL robot ground truth (Jetson Orin jetauto_ros2_ws +
+  Jetson Nano ROS1 jetauto_ws):
+    * geometry / meshes : real jetauto_description (base, 4 mecanum wheels, shells)
+    * mecanum wheels    : friction-based with 12 modeled rollers each (no kinematic
+                          plugin) -> holonomic strafe emerges from physics
+    * sensors           : RPLIDAR A1 (/scan), MPU-6050 IMU (/imu/data_raw), Astra (/cam_1)
+    * control           : velocity command on the 4 wheels (ros2_control) driven by
+                          jetauto_chassis_sim.py (faithful port of mecanum.py)
+    * odom/TF           : odom_raw (dead-reckoning) + madgwick + robot_localization EKF
+
+  Used by launch/jetauto_sim.launch.py.  Model spawned in gz as "jetauto".
+-->
+<robot name="jetauto" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="prefix"     default=""/>
+  <xacro:arg name="use_aruco"  default="true"/>
+
+  <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_base.urdf.xacro"/>
+  <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_mecanum_wheel.urdf.xacro"/>
+  <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_sensors.urdf.xacro"/>
+  <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_control.urdf.xacro"/>
+
+  <!-- chassis + decorative shells -->
+  <xacro:jetauto_base prefix="$(arg prefix)"/>
+
+  <!-- 4 mecanum wheels (X roller config). Per-corner STL from the real description. -->
+  <xacro:jetauto_mecanum_wheel prefix="$(arg prefix)" side="front_left"  mesh="wheel_left_front_link"  x_reflect="1"  y_reflect="1"/>
+  <xacro:jetauto_mecanum_wheel prefix="$(arg prefix)" side="front_right" mesh="wheel_right_front_link" x_reflect="1"  y_reflect="-1"/>
+  <xacro:jetauto_mecanum_wheel prefix="$(arg prefix)" side="back_left"   mesh="wheel_left_back_link"   x_reflect="-1" y_reflect="1"/>
+  <xacro:jetauto_mecanum_wheel prefix="$(arg prefix)" side="back_right"  mesh="wheel_right_back_link"  x_reflect="-1" y_reflect="-1"/>
+
+  <!-- sensors -->
+  <xacro:jetauto_sensors prefix="$(arg prefix)"/>
+
+  <!-- velocity ros2_control + ign_ros2_control -->
+  <xacro:jetauto_control prefix="$(arg prefix)"/>
+
+  <!-- ArUco marker on the roof (used by the drone/mission to localize the carrito).
+       Same as the original carrito_con_aruco; toggle with use_aruco:=false. -->
+  <xacro:if value="$(arg use_aruco)">
+    <link name="techo_aruco_link">
+      <visual>
+        <geometry><box size="0.18 0.18 0.001"/></geometry>
+      </visual>
+      <collision>
+        <geometry><box size="0.18 0.18 0.001"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="0.05"/>
+        <inertia ixx="0.0005" ixy="0" ixz="0" iyy="0.0005" iyz="0" izz="0.0005"/>
+      </inertial>
+    </link>
+    <gazebo reference="techo_aruco_link">
+      <visual>
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <pbr>
+            <metal>
+              <albedo_map>file://$(find mi_proyecto_sim)/models/marcador_aruco/materials/textures/aruco4.png</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+    </gazebo>
+    <joint name="aruco_base_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="techo_aruco_link"/>
+      <origin xyz="0 0 0.22" rpy="0 0 0"/>
+    </joint>
+  </xacro:if>
+
+</robot>

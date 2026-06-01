@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="skydome">
+    <static>true</static>
+    <link name="link">
+      <visual name="visual">
+        <cast_shadows>false</cast_shadows>
+        <geometry>
+          <mesh>
+            <uri>model://skydome/meshes/skydome.obj</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://skydome/meshes/hangar_equirect.png</albedo_map>
+              <emissive_map>model://skydome/meshes/hangar_equirect.png</emissive_map>
+              <metalness>0.0</metalness>
+              <roughness>1.0</roughness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

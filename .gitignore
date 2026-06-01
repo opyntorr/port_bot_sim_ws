@@ -1,0 +1,22 @@
+build/
+install/
+log/
+.vscode/
+.agents/rules
+
+# Generado por la mision del dron (~1.5 GB de fotos/stitching) — NO versionar
+src/mi_proyecto_sim/mision_output/
+
+# Python compilado
+__pycache__/
+*.pyc
+*.pyo
+
+# demo_tello_sim tiene su PROPIO repo git (src/demo_tello_sim/.git) — se versiona aparte;
+# si lo trackearamos aqui git lo meteria como gitlink confuso.
+src/demo_tello_sim/
+
+# Artefactos varios
+*.bag
+*.swp
+*~

@@ -1,0 +1,24 @@
+# ros2_control controllers for the JetAuto sim (loaded by ign_ros2_control).
+# - joint_state_broadcaster : publishes /joint_states (wheel pos/vel -> wheel TF in RViz)
+# - velocity_controller     : JointGroupVelocityController on the 4 mecanum wheels.
+#   jetauto_chassis_sim.py publishes Float64MultiArray to /velocity_controller/commands
+#   in the joint order [front_left, front_right, back_left, back_right].
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    use_sim_time: true
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
+
+velocity_controller:
+  ros__parameters:
+    joints:
+      - front_left_wheel_joint
+      - front_right_wheel_joint
+      - back_left_wheel_joint
+      - back_right_wheel_joint
+    interface_name: velocity

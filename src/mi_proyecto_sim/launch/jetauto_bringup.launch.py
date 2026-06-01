@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""
+jetauto_bringup.launch.py  —  Bringup REUTILIZABLE del robot JetAuto (sim Ignition).
+
+Extrae el "bloque de robot" de jetauto_sim.launch.py para incluirlo desde cualquier
+launch que YA arranque Gazebo y el puente de /clock. Sustituye el viejo bringup del
+rosmaster_x3 (RSP carrito + effort_controller + Mcnamu_driver_PID_sim + odom_noise_filter).
+
+POSEE (lo que aporta este include):
+  - parameter_bridge de sensores del robot (/scan, /imu/data_raw, /cam_1/*)   [jetauto_sensor_bridge]
+  - robot_state_publisher (jetauto_sim.urdf.xacro)        arbol TF base_footprint->...->lidar_frame
+  - ros_gz spawn  -name jetauto                            inserta el robot mecanum
+  - ros2_control: joint_state_broadcaster + velocity_controller
+  - jetauto_chassis_sim   /cmd_vel -> 4 velocidades de rueda (mecanum real) + /odom_raw
+  - imu_filter_madgwick   /imu/data_raw -> /imu/data
+  - ekf (robot_localization)  /odom_raw + /imu/data -> /odom + TF odom->base_footprint
+
+NO POSEE (lo mantiene cada parent que incluye este archivo):
+  - el proceso de Gazebo (ign gazebo ...)         - el puente de /clock (y topics del dron)
+  - las variables de entorno IGN_GAZEBO_*         - RViz, teleop, joy
+  - SLAM, map_server, planificador, ArUcos, nodos del dron
+
+REQUISITOS del parent:
+  1. Arrancar gz.  2. Puentear /clock.  3. IGN_GAZEBO_RESOURCE_PATH debe incluir el share
+  del paquete (pkg_sim) para hallar las mallas del jetauto.  4. NO puentear /scan, /cam_1/*,
+  /model/* ni /cmd_vel->gz (cmd_vel lo consume jetauto_chassis_sim en el lado ROS).
+
+USO:
+  from launch.actions import IncludeLaunchDescription
+  from launch.launch_description_sources import PythonLaunchDescriptionSource
+  jetauto = IncludeLaunchDescription(
+      PythonLaunchDescriptionSource(os.path.join(pkg_sim, 'launch', 'jetauto_bringup.launch.py')),
+      launch_arguments={'x': '-1.0', 'y': '-1.0', 'yaw': '1.5708'}.items())
+"""
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
+from launch.substitutions import Command, LaunchConfiguration
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+
+def generate_launch_description():
+    pkg_sim = get_package_share_directory('mi_proyecto_sim')
+    xacro_file = os.path.join(pkg_sim, 'urdf', 'jetauto', 'jetauto_sim.urdf.xacro')
+    ekf_yaml = os.path.join(pkg_sim, 'config', 'jetauto_ekf.yaml')
+
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    spawn_x = LaunchConfiguration('x')
+    spawn_y = LaunchConfiguration('y')
+    spawn_z = LaunchConfiguration('z')
+    spawn_yaw = LaunchConfiguration('yaw')
+
+    args = [
+        DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument('x', default_value='-1.0'),
+        DeclareLaunchArgument('y', default_value='-1.0'),
+        DeclareLaunchArgument('z', default_value='0.08'),
+        DeclareLaunchArgument('yaw', default_value='1.5708'),
+    ]
+
+    # --- puente de sensores del robot (nombre propio para no colisionar con el del parent) ---
+    robot_bridge = Node(
+        package='ros_gz_bridge', executable='parameter_bridge',
+        name='jetauto_sensor_bridge', output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+        arguments=[
+            '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            '/imu/data_raw@sensor_msgs/msg/Imu[ignition.msgs.IMU',
+            '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            '/cam_1/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
+            '/cam_1/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
+        ],
+    )
+
+    # --- robot_state_publisher (URDF JetAuto sim) ---
+    robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
+    rsp = Node(
+        package='robot_state_publisher', executable='robot_state_publisher', output='screen',
+        parameters=[{'use_sim_time': use_sim_time, 'robot_description': robot_description}],
+    )
+
+    # --- spawn del robot en gz ---
+    spawn = Node(
+        package='ros_gz_sim', executable='create', output='screen',
+        arguments=['-name', 'jetauto', '-topic', 'robot_description',
+                   '-x', spawn_x, '-y', spawn_y, '-z', spawn_z, '-Y', spawn_yaw],
+    )
+
+    # --- controladores ros2_control (se cargan tras el spawn) ---
+    jsb = Node(package='controller_manager', executable='spawner', output='screen',
+               arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'])
+    vel_ctrl = Node(package='controller_manager', executable='spawner', output='screen',
+                    arguments=['velocity_controller', '--controller-manager', '/controller_manager'])
+
+    # --- driver fiel: /cmd_vel -> velocidad de rueda + /odom_raw (dead-reckoning) ---
+    chassis_sim = Node(
+        package='mi_proyecto_sim', executable='jetauto_chassis_sim.py',
+        name='jetauto_chassis_sim', output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
+    # --- IMU madgwick: /imu/data_raw -> /imu/data (orientación) ---
+    madgwick = Node(
+        package='imu_filter_madgwick', executable='imu_filter_madgwick_node',
+        name='imu_filter', output='screen',
+        parameters=[{'use_sim_time': use_sim_time, 'use_mag': False,
+                     'publish_tf': False, 'world_frame': 'enu'}],
+    )
+
+    # --- EKF robot_localization: /odom_raw + /imu/data -> /odom (+ TF odom->base_footprint) ---
+    ekf = Node(
+        package='robot_localization', executable='ekf_node', name='ekf_filter_node',
+        output='screen', parameters=[ekf_yaml, {'use_sim_time': use_sim_time}],
+        remappings=[('odometry/filtered', 'odom')],
+    )
+
+    # secuencia: spawn -> joint_state_broadcaster -> velocity_controller -> chassis_sim
+    seq = [
+        RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[jsb])),
+        RegisterEventHandler(OnProcessExit(target_action=jsb, on_exit=[vel_ctrl])),
+        RegisterEventHandler(OnProcessExit(target_action=vel_ctrl, on_exit=[chassis_sim])),
+    ]
+
+    return LaunchDescription(args + [robot_bridge, rsp, spawn, madgwick, ekf] + seq)

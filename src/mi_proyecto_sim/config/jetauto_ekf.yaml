@@ -1,0 +1,63 @@
+# robot_localization EKF for the JetAuto sim.
+# Verbatim port of the REAL robot config (Orin jetauto_controller/config/ekf.yaml,
+# itself the ROS2 port of jetauto_slam/config/robot_localization.yaml).
+# Fuses odom_raw (dead-reckoning from cmd_vel) + imu/data (madgwick) -> odom + odom->base_footprint TF.
+# Only change vs real: use_sim_time true.
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+    publish_tf: true
+    publish_acceleration: false
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    odom0: odom_raw
+    # SIM FIX (divergencia del EKF): fusionar VELOCIDADES de cuerpo (twist) en vez de la
+    # posicion absoluta en modo diferencial. Con differential:true el EKF calculaba
+    # v = Delta_pos / (stamp_k - stamp_{k-1}); con RTF bajo el timer de 30 Hz del chasis
+    # dispara mas rapido de lo que avanza /clock, asi que dos odom_raw compartian timestamp
+    # de sim (Delta_t ~ 0) -> v ~ 1e13 m/s -> la posicion estimada explotaba a ~1e14 m y el
+    # control perseguia una pose basura (avance erratico / reversa). El chasis ya publica
+    # twist.linear.{x,y} y twist.angular.z correctos, asi que los fusionamos directos: las
+    # velocidades no dependen de Delta_t y son inmunes a timestamps irregulares.
+    # (En el robot real, con reloj monotono y dt constante, differential:true sobre la
+    #  posicion funcionaba; esto es un ajuste especifico de la simulacion.)
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true]
+    odom0_queue_size: 1
+    odom0_differential: false
+    odom0_relative: false
+    odom0_nodelay: false
+
+    imu0: imu/data
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: true
+    imu0_relative: false
+    imu0_queue_size: 1
+    imu0_nodelay: false
+    imu0_remove_gravitational_acceleration: true
+
+    use_control: true
+    stamped_control: false
+    control_timeout: 0.2
+    control_config: [true, false, false, false, false, true]
+    acceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 3.4]
+    deceleration_limits: [1.3, 0.0, 0.0, 0.0, 0.0, 4.5]
+    acceleration_gains: [0.8, 0.0, 0.0, 0.0, 0.0, 0.9]
+    deceleration_gains: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
