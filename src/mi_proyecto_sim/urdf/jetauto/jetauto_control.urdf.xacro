@@ -42,5 +42,23 @@
       </plugin>
     </gazebo>
 
+    <!-- Odometria NATIVA de gz: publica odom->base_footprint directo de la pose del modelo
+         en el simulador (igual que el rosmaster). Robusto ante RTF bajo: no depende de la
+         cadena chassis_sim(dead-reckoning)+EKF, que se desincronizaba cuando la fisica pesada
+         de las 48 ruedas-rodillo bajaba el RTF (SLAM perdia odom->base_footprint -> "unconnected
+         trees" / "lidar invalido"). El chassis_sim SE MANTIENE, pero solo para convertir
+         /cmd_vel en velocidades de rueda; su /odom_raw y el EKF ya no se usan para la TF. -->
+    <gazebo>
+      <plugin filename="ignition-gazebo-odometry-publisher-system"
+              name="ignition::gazebo::systems::OdometryPublisher">
+        <odom_frame>odom</odom_frame>
+        <robot_base_frame>${prefix}base_footprint</robot_base_frame>
+        <odom_publish_frequency>50</odom_publish_frequency>
+        <odom_topic>/model/jetauto/odometry</odom_topic>
+        <tf_topic>/model/jetauto/tf</tf_topic>
+        <dimensions>2</dimensions>
+      </plugin>
+    </gazebo>
+
   </xacro:macro>
 </robot>

@@ -11,9 +11,10 @@ POSEE (lo que aporta este include):
   - robot_state_publisher (jetauto_sim.urdf.xacro)        arbol TF base_footprint->...->lidar_frame
   - ros_gz spawn  -name jetauto                            inserta el robot mecanum
   - ros2_control: joint_state_broadcaster + velocity_controller
-  - jetauto_chassis_sim   /cmd_vel -> 4 velocidades de rueda (mecanum real) + /odom_raw
-  - imu_filter_madgwick   /imu/data_raw -> /imu/data
-  - ekf (robot_localization)  /odom_raw + /imu/data -> /odom + TF odom->base_footprint
+  - jetauto_chassis_sim   /cmd_vel -> 4 velocidades de rueda (mecanum real) + /odom_raw (sin usar)
+  - odometria NATIVA de gz (plugin OdometryPublisher) -> /odom + TF odom->base_footprint,
+    puenteada en robot_bridge. Sustituye a imu_filter_madgwick + EKF (se desincronizaban con
+    RTF bajo; el bloque comentado mas abajo explica como volver al EKF).
 
 NO POSEE (lo mantiene cada parent que incluye este archivo):
   - el proceso de Gazebo (ign gazebo ...)         - el puente de /clock (y topics del dron)
@@ -73,6 +74,14 @@ def generate_launch_description():
             '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/cam_1/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
             '/cam_1/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
+            # Odometria NATIVA de gz (plugin OdometryPublisher en jetauto_control.urdf.xacro):
+            # /odom y la TF odom->base_footprint directo del simulador (robusto ante RTF bajo).
+            '/model/jetauto/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
+            '/model/jetauto/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
+        ],
+        remappings=[
+            ('/model/jetauto/odometry', '/odom'),
+            ('/model/jetauto/tf', '/tf'),
         ],
     )
 
@@ -103,20 +112,14 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
-    # --- IMU madgwick: /imu/data_raw -> /imu/data (orientación) ---
-    madgwick = Node(
-        package='imu_filter_madgwick', executable='imu_filter_madgwick_node',
-        name='imu_filter', output='screen',
-        parameters=[{'use_sim_time': use_sim_time, 'use_mag': False,
-                     'publish_tf': False, 'world_frame': 'enu'}],
-    )
-
-    # --- EKF robot_localization: /odom_raw + /imu/data -> /odom (+ TF odom->base_footprint) ---
-    ekf = Node(
-        package='robot_localization', executable='ekf_node', name='ekf_filter_node',
-        output='screen', parameters=[ekf_yaml, {'use_sim_time': use_sim_time}],
-        remappings=[('odometry/filtered', 'odom')],
-    )
+    # --- ODOMETRIA: la da gz directamente (plugin OdometryPublisher en jetauto_control.urdf.xacro)
+    #     -> /odom + TF odom->base_footprint, puenteados arriba en robot_bridge.
+    #     Antes esto lo construia imu_filter_madgwick + EKF (fusion de /odom_raw dead-reckon + IMU),
+    #     pero esa cadena se desincronizaba con el RTF bajo de la fisica de 48 rodillos -> SLAM
+    #     perdia odom->base_footprint ("unconnected trees" / "lidar invalido"). El chassis_sim se
+    #     mantiene (convierte /cmd_vel en velocidades de rueda); su /odom_raw queda sin usar.
+    #     Para volver al EKF: restaurar madgwick+ekf, devolverlos al return, y quitar del
+    #     robot_bridge los entries /model/jetauto/odometry y /model/jetauto/tf.
 
     # secuencia: spawn -> joint_state_broadcaster -> velocity_controller -> chassis_sim
     seq = [
@@ -125,4 +128,4 @@ def generate_launch_description():
         RegisterEventHandler(OnProcessExit(target_action=vel_ctrl, on_exit=[chassis_sim])),
     ]
 
-    return LaunchDescription(args + [robot_bridge, rsp, spawn, madgwick, ekf] + seq)
+    return LaunchDescription(args + [robot_bridge, rsp, spawn] + seq)

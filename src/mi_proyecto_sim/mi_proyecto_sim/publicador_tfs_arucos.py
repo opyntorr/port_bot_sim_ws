@@ -57,6 +57,20 @@ class PublicadorTfsArucos(Node):
         self.static_tf = StaticTransformBroadcaster(self)
         self.published = False
 
+        # Asentamiento de SLAM: NO congelar la alineacion en el primer map->base_footprint
+        # (cuando SLAM arranca, su map->odom aun no esta refinado y sigue moviendose unos
+        # segundos). El robot esta QUIETO todo este tiempo (el control espera /alignment_ready),
+        # asi que recomputamos la alineacion cada tick desde la pose actual y solo CONGELAMOS
+        # cuando (tx,ty,phi) deja de cambiar. Antes se congelaba al primer TF -> la meta_aruco
+        # quedaba mal ubicada y el robot llegaba al fin de la ruta antes de poder replanificar.
+        self._prev_align = None        # (tx, ty, phi) del tick anterior
+        self._stable_count = 0         # ticks consecutivos sin cambio significativo
+        self._stable_needed = 15       # ~1.5 s (sim) de estabilidad antes de congelar
+        self._eps_xy = 0.015           # 1.5 cm
+        self._eps_yaw = 0.010          # ~0.57 deg
+        self._t_first_aligned = None   # tiempo (sim) del primer map->base_footprint
+        self._settle_timeout = 20.0    # s (sim): si SLAM nunca se asienta, congelar igual
+
         # Publisher latched para que control_trayectoria sepa cuando ya hay
         # alineacion valida entre `map` (SLAM) y `map_dron_origin` (mundo).
         # TRANSIENT_LOCAL: subscriptores que se conecten despues reciben el
@@ -138,9 +152,9 @@ class PublicadorTfsArucos(Node):
             ty = my - (cx * math.sin(phi) + cy * math.cos(phi))
 
             self.get_logger().info(
-                f'Alineacion mundo->SLAM completada. '
+                f'Alineacion mundo->SLAM (asentando). '
                 f'(tx={tx:.3f}, ty={ty:.3f}, phi={math.degrees(phi):.1f} deg, '
-                f'pose_map=({mx:.2f},{my:.2f}))')
+                f'pose_map=({mx:.2f},{my:.2f}))', throttle_duration_sec=2.0)
             aligned = True
 
         except Exception as e:
@@ -148,6 +162,28 @@ class PublicadorTfsArucos(Node):
             # SLAM aun no arranca, publicar centrado en 0 temporalmente
             tx, ty, phi = 0.0, 0.0, 0.0
             aligned = False
+
+        # --- Asentamiento de SLAM: decidir si ya podemos CONGELAR la alineacion ---
+        # Mientras SLAM se asienta seguimos recomputando y publicando la alineacion (el robot
+        # esta quieto), pero NO publicamos meta_aruco ni /alignment_ready hasta que (tx,ty,phi)
+        # se estabiliza. Asi ni el planner ni el control arrancan con una alineacion provisional.
+        import math as _m
+        freeze = False
+        if aligned:
+            if self._t_first_aligned is None:
+                self._t_first_aligned = self.get_clock().now()
+            cur = (tx, ty, phi)
+            if self._prev_align is not None:
+                dtx = abs(cur[0] - self._prev_align[0])
+                dty = abs(cur[1] - self._prev_align[1])
+                dphi = abs((cur[2] - self._prev_align[2] + _m.pi) % (2 * _m.pi) - _m.pi)
+                if dtx < self._eps_xy and dty < self._eps_xy and dphi < self._eps_yaw:
+                    self._stable_count += 1
+                else:
+                    self._stable_count = 0
+            self._prev_align = cur
+            elapsed = (self.get_clock().now() - self._t_first_aligned).nanoseconds / 1e9
+            freeze = (self._stable_count >= self._stable_needed) or (elapsed > self._settle_timeout)
 
         transforms = []
         stamp = self.get_clock().now().to_msg()
@@ -180,7 +216,12 @@ class PublicadorTfsArucos(Node):
             t.header.stamp = stamp
             t.child_frame_id = f'{name}_aruco'
 
-            if name == 'meta' and aligned:
+            if name == 'meta':
+                if not (aligned and freeze):
+                    # No publicar la meta mientras SLAM se asienta: si la publicaramos antes,
+                    # el planificador_rrt planearia hacia una meta provisional y el robot
+                    # llegaria al fin de esa ruta corta antes de poder replanificar.
+                    continue
                 # Convertir (wx, wy, wyaw) de map_dron_origin a map: aplicar (tx, ty, phi)
                 mx_meta = tx + (wx * math.cos(phi) - wy * math.sin(phi))
                 my_meta = ty + (wx * math.sin(phi) + wy * math.cos(phi))
@@ -208,12 +249,14 @@ class PublicadorTfsArucos(Node):
 
         self.static_tf.sendTransform(transforms)
 
-        # Solo detenemos el ciclo si ya logramos la alineacion definitiva
-        if aligned:
+        # Solo congelamos cuando la alineacion se ASENTO (SLAM dejo de mover map->odom).
+        if aligned and freeze:
             self.published = True
             self.timer.cancel()
             self.alignment_pub.publish(Bool(data=True))
-            self.get_logger().info(f'Alineacion final anclada exitosamente. /alignment_ready=True publicado.')
+            self.get_logger().info(
+                f'Alineacion ASENTADA y congelada (estable {self._stable_count} ticks). '
+                f'meta_aruco anclada y /alignment_ready=True publicado.')
 
     def _publish_identity_chain(self, data):
         """Stack Cartographer+prior congelado: `map` es el frame del stitching, no
