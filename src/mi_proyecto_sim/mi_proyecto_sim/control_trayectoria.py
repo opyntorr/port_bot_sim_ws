@@ -64,8 +64,8 @@ class ControlTrayectoria(Node):
         self.h = 0.25          # Aumentado (antes 0.1) para absorber el ruido y la deriva sin sobreaccionar
         self.k_px = 1.5        # Ganancia proporcional bajada para estabilidad
         self.k_py = 1.5        
-        self.v_max = 0.35      # Velocidad maxima permitida
-        self.w_max = 1.0       # Velocidad angular suave
+        self.v_max = 0.20      # m/s (coherente con cap chassis 0.25; conservador para SLAM)
+        self.w_max = 0.5       # rad/s (giro suave; coherente con cap chassis 0.5)
 
         # Variables para suavizado (Filtro Pasa-Baja)
         self.v_prev = 0.0
@@ -138,8 +138,8 @@ class ControlTrayectoria(Node):
         self.obstaculo_cerca = False
         self.peligro_frontal = False
         self.min_dist_frontal = 1.5 # Ampliado a 1.5 para poder medir hasta 1.0m
-        self.umbral_frontal = 0.35 
-        self.umbral_lateral = 0.25 
+        self.umbral_frontal = 0.45  # lidar ~0.10 m adelante del centro (JetAuto > RosMaster X3)
+        self.umbral_lateral = 0.40  # la trasera queda a ~0.24 m del lidar -> mas margen no-frontal
         
         self.last_log_time = None  # Se inicializa cuando el reloj es válido
 
@@ -664,13 +664,9 @@ class ControlTrayectoria(Node):
         e_x = x_d - x_c
         e_y = y_d - y_c
         
-        # Velocidad Dinamica basada en Lidar Frontal
-        # Aumentamos la velocidad hasta 0.7 m/s si hay espacio libre (>0.5m)
+        # Velocidad Dinamica: SIN boost en recta. El chassis capa a 0.25 m/s, pedir mas no
+        # sirve y desestabiliza el SLAM. (antes subia a 0.7 m/s con espacio libre)
         v_dinamica = self.v_max
-        if self.min_dist_frontal > 0.5:
-            # Rango: 0.5m -> factor 0.0, 1.0m -> factor 1.0
-            factor = min(1.0, (self.min_dist_frontal - 0.5) / 0.5)
-            v_dinamica = self.v_max + factor * (0.7 - self.v_max)
             
         # Para hacer el seguimiento más dinamico, calculamos una velocidad de feedforward hacia el objetivo
         # Si fueramos un tracker puro en el tiempo, estas serían las derivadas de la trayectoria, 

@@ -149,7 +149,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': False,
-            'robot_radius_m': 0.19,
+            'robot_radius_m': 0.22,
         }],
     )
 
