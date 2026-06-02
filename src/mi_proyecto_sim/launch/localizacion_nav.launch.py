@@ -8,25 +8,30 @@ el rosmaster viejo (carrito_con_aruco.urdf.xacro, /cmd_vel->gz, odom de /model/r
 aqui esta ADAPTADO al JetAuto (jetauto_bringup) y al patron actual del proyecto.
 
 Flujo:
-  1. Gazebo (laberinto) + JetAuto (jetauto_bringup: RSP + spawn + controladores + chassis +
-     IMU + EKF odom->base_footprint + sensores) + filtro_lidar (/scan -> /scan_filtered).
-  2. map_server carga un mapa previo y lo publica en /map (frame `map`).
-  3. AMCL (nav2_amcl, config/amcl_config.yaml, scan_topic=scan_filtered) localiza al robot:
-     publica `map -> odom`. ARRANCA cuando le das la pose inicial con la tool
-     "2D Pose Estimate" de RViz (-> /initialpose). Sin esa pose, AMCL no publica map->odom.
+  1. Gazebo (laberinto, CON GUI) + JetAuto (jetauto_bringup: RSP + spawn + controladores +
+     chassis + IMU + EKF odom->base_footprint + sensores) + filtro_lidar (/scan -> /scan_filtered).
+  2. map_server_planner carga el MAPA PREVIO (mapa_mision) y lo publica en /map_dron
+     (frame map_dron_origin). Es solo referencia para el planner; NO se sobrescribe.
+  3. SLAM toolbox (mode=mapping, scan_topic=/scan_filtered) reconstruye un MAPA NUEVO en vivo
+     y lo publica en /map (frame `map`), ademas de la TF `map -> odom` (localizacion). Asi hay
+     dos mapas independientes: el cargado (/map_dron) y el que SLAM va construyendo (/map). SLAM
+     arranca recien cuando el EKF publica odom->base_footprint (compuerta wait_for_tf), si no
+     descarta los primeros scans. Para guardar el mapa nuevo usa guardar_mapa_slam.py con OTRO
+     nombre de archivo (no mapa_mision) para no pisar el previo.
   4. Fijas el destino con "2D Goal Pose" en RViz (-> /goal_pose). nav_goal_bridge lo
      convierte en la TF `meta_aruco`, publica `carrito_aruco` (pose actual) y `map ->
      map_dron_origin` (identidad) + /alignment_ready=True para destrabar el control.
-  5. planificador_rrt planea (mapa en /map_dron, frame map_dron_origin) y control_trayectoria
-     sigue la ruta. Modos visuales OFF (disable_visual_modes=True): para al llegar al terminal.
+  5. planificador_rrt planea (mapa en /map_dron, frame map_dron_origin) y control_diferencial
+     sigue la ruta.
   6. joy + teleop_twist_joy: puedes manejar con control Xbox en cualquier momento.
 
-Diferencia vs navegacion_manual.launch.py: alli la localizacion es SLAM toolbox; aqui es
-AMCL (con 2D Pose Estimate) y ademas trae el teleop Xbox.
+Diferencia vs navegacion_manual.launch.py: comparten SLAM toolbox como localizacion, pero aqui
+ademas se carga un mapa previo en /map_dron, se trae nav_goal_bridge + planificador_rrt +
+control_diferencial y el teleop Xbox.
 
 Argumentos:
-  map : path absoluto al .yaml del mapa (default: mapa_mision.yaml en src/mi_proyecto_sim/maps;
-        el original usaba mapa_slam.yaml, que ya no existe).
+  map : path absoluto al .yaml del MAPA PREVIO a cargar en /map_dron (default: mapa_mision.yaml
+        en src/mi_proyecto_sim/maps). SLAM construye su propio mapa aparte (/map), no este.
 """
 
 import os
@@ -35,7 +40,9 @@ from launch import LaunchDescription
 from launch.actions import (
     ExecuteProcess, SetEnvironmentVariable, AppendEnvironmentVariable,
     TimerAction, DeclareLaunchArgument, IncludeLaunchDescription,
+    RegisterEventHandler,
 )
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -75,7 +82,7 @@ def generate_launch_description():
     )
 
     gazebo = ExecuteProcess(
-        cmd=['ign', 'gazebo', '-r', world_file],
+        cmd=['ign', 'gazebo', '-r', world_file],  # con GUI (sin -s)
         output='screen',
     )
 
@@ -112,24 +119,11 @@ def generate_launch_description():
     )
 
     # =========================================================
-    # MAPAS
-    #  - /map (frame `map`)                 -> para AMCL (localizacion)
-    #  - /map_dron (frame map_dron_origin)  -> para planificador_rrt
-    # Mismo YAML, dos publicaciones (distinto topic/frame). nav_goal_bridge publica
-    # map -> map_dron_origin como identidad, asi ambos frames coinciden.
+    # MAPA PREVIO (solo /map_dron, frame map_dron_origin) -> para planificador_rrt.
+    # NO se publica /map aqui: ese topic y la TF `map` los produce SLAM toolbox (mapa nuevo
+    # en vivo). nav_goal_bridge publica map -> map_dron_origin (identidad) para conectar
+    # ambos frames. Asi el mapa cargado (/map_dron) y el de SLAM (/map) conviven sin pisarse.
     # =========================================================
-    map_server_amcl = Node(
-        package='nav2_map_server',
-        executable='map_server',
-        name='map_server',
-        output='screen',
-        parameters=[{
-            'yaml_filename': map_yaml,
-            'use_sim_time': True,
-            'frame_id': 'map',
-        }],
-    )
-
     map_server_planner = Node(
         package='nav2_map_server',
         executable='map_server',
@@ -144,21 +138,43 @@ def generate_launch_description():
     )
 
     # =========================================================
-    # AMCL (localizacion) — necesita 2D Pose Estimate en RViz para arrancar
+    # SLAM TOOLBOX (localizacion + mapa NUEVO en vivo) — publica /map y la TF map->odom.
+    # Reemplaza a AMCL. Arranca recien cuando el EKF publica odom->base_footprint (compuerta
+    # wait_for_tf); si arranca antes, SLAM descarta los primeros scans ("queue is full").
     # =========================================================
-    amcl_node = Node(
-        package='nav2_amcl',
-        executable='amcl',
-        name='amcl',
+    espera_ekf = Node(
+        package='mi_proyecto_sim',
+        executable='wait_for_tf.py',
+        name='espera_ekf_tf',
         output='screen',
-        parameters=[
-            ParameterFile(
-                os.path.join(pkg_sim, 'config', 'amcl_config.yaml'),
-                allow_substs=True,
-            )
-        ],
+        parameters=[{
+            'use_sim_time': True,
+            'target': 'odom',
+            'source': 'base_footprint',
+            'timeout': 60.0,
+        }],
     )
 
+    slam_toolbox_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('slam_toolbox'),
+                'launch', 'online_async_launch.py'
+            )
+        ),
+        launch_arguments={
+            'slam_params_file': os.path.join(
+                pkg_sim, 'config', 'mapper_params_online_async.yaml'),
+            'use_sim_time': 'true',
+        }.items(),
+    )
+
+    slam_tras_ekf = RegisterEventHandler(
+        OnProcessExit(target_action=espera_ekf, on_exit=[slam_toolbox_launch])
+    )
+
+    # lifecycle_manager: solo gestiona el map_server del MAPA PREVIO (/map_dron).
+    # SLAM toolbox maneja su propio ciclo de vida; no va aqui.
     lifecycle_manager = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -167,7 +183,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': True,
             'autostart': True,
-            'node_names': ['map_server', 'map_server_planner', 'amcl'],
+            'node_names': ['map_server_planner'],
         }],
     )
 
@@ -196,14 +212,13 @@ def generate_launch_description():
         }],
     )
 
-    control_trayectoria_node = Node(
+    control_diferencial_node = Node(
         package='mi_proyecto_sim',
-        executable='control_trayectoria.py',
-        name='control_trayectoria',
+        executable='control_diferencial.py',
+        name='control_diferencial',
         output='screen',
         parameters=[{
             'use_sim_time': True,
-            'disable_visual_modes': True,
         }],
     )
 
@@ -243,16 +258,16 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
-    # Margen para que el TF tree (jetauto_bringup) y los map_server esten arriba antes
-    # de arrancar AMCL, lifecycle, planner y control.
+    # Margen para que el TF tree (jetauto_bringup) y el map_server esten arriba antes
+    # de arrancar lifecycle, nav_goal_bridge, planner y control. SLAM NO va aqui: lo
+    # dispara el event handler cuando el EKF publica odom->base_footprint.
     delayed_nav_stack = TimerAction(
         period=5.0,
         actions=[
-            amcl_node,
             lifecycle_manager,
             nav_goal_bridge,
             planificador_rrt_node,
-            control_trayectoria_node,
+            control_diferencial_node,
         ],
     )
 
@@ -265,10 +280,11 @@ def generate_launch_description():
         puente,
         jetauto,
         filtro_lidar_node,
-        map_server_amcl,
         map_server_planner,
         joy_node,
         teleop,
         rviz_node,
+        espera_ekf,        # espera odom->base_footprint y entonces dispara SLAM
+        slam_tras_ekf,
         delayed_nav_stack,
     ])

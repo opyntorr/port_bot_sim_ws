@@ -38,6 +38,7 @@ install(PROGRAMS
   mi_proyecto_sim/generador_mapa.py
   mi_proyecto_sim/planificador_astar.py
   mi_proyecto_sim/control_trayectoria.py
+  mi_proyecto_sim/control_diferencial.py
   mi_proyecto_sim/filtro_lidar.py
   mi_proyecto_sim/slam_occupancy_grid.py
   mi_proyecto_sim/guardar_mapa_slam.py
