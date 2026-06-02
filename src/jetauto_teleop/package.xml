@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jetauto_teleop</name>
+  <version>0.1.0</version>
+  <description>Teleop del JetAuto con control (Xbox/8BitDo) desde la laptop, por el bridge DDS.</description>
+  <maintainer email="a00344869@tec.mx">opyntorr</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>joy_linux</exec_depend>
+  <exec_depend>teleop_twist_joy</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

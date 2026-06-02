@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Bridge DDS del Orin: usa el ethernet (enP8p1s0 = 192.168.5.1) con peer unicast
+     a la Nano (192.168.5.2), y TAMBIEN el hotspot (wlx... = 10.42.1.1) por multicast
+     para poder monitorear/RViz desde la laptop. -->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <!-- SOLO el ethernet al Nano. (No anunciar el hotspot 10.42.1.1: el Nano no lo rutea
+             y causa fallos de escritura DDS. El manejo se hace EN el Orin, no por la laptop.) -->
+        <NetworkInterface name="enP8p1s0" priority="default" multicast="true"/>
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <!-- Permitir muchos participantes (orin_compute + slam + cerebro AGV + CLIs).
+           Default ~9 -> control_trayectoria fallaba con 'rmw handle invalid'. -->
+      <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="192.168.5.2"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

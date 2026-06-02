@@ -1,0 +1,26 @@
+# Teleop holonomico (mecanum) para el JetAuto via control Xbox One S / 8BitDo SN30 Pro+.
+# Publica /cmd_vel (geometry_msgs/Twist) que el chassis_node del Nano consume por DDS.
+# Mapeo (Linux joy, X-input): LB=boton4 (hombre-muerto), RB=boton5 (turbo);
+#   stick IZQ axis1=avanzar/retroceder, axis0=strafe ; stick DER axis3=girar.
+# Si una direccion sale invertida, cambia el SIGNO del scale_* correspondiente.
+teleop_twist_joy_node:
+  ros__parameters:
+    require_enable_button: true
+    enable_button: 4          # LB: mantener para que se mueva
+    enable_turbo_button: 5    # RB: turbo mientras se mantiene
+    axis_linear:
+      x: 1
+      y: 0
+    scale_linear:
+      x: 0.15                 # m/s avanzar
+      y: 0.15                 # m/s strafe (signo ajustado a ESTE robot)
+    scale_linear_turbo:
+      x: 0.30
+      y: 0.30
+    axis_angular:
+      yaw: 3
+    scale_angular:
+      yaw: 0.4                # rad/s girar (conservador para SLAM; ~23 deg/s)
+    scale_angular_turbo:
+      yaw: 1.5
+    publish_stamped_twist: false
