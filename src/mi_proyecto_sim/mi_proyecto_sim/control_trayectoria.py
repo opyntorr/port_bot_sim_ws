@@ -92,8 +92,8 @@ class ControlTrayectoria(Node):
         # la meta (Kelly & Diaz controla el punto desplazado x_c y siempre deja
         # al centro h metros corto del waypoint final).
         self.terminal_approach_mode = False
-        self.terminal_threshold = 0.80    # m, entra a terminal cuando el centro esta a esta dist
-        self.terminal_arrival = 0.60      # m, salta a visual_search al llegar a esta dist
+        self.terminal_threshold = 1.0    # m, entra a terminal cuando el centro esta a esta dist
+        self.terminal_arrival = 0.6      # m, salta a visual_search al llegar a esta dist
         self.terminal_yaw_tol = 0.10      # rad, tolerancia de alineacion al goal
         self.k_v_terminal = 0.6           # ganancia P sobre distancia
         self.v_max_terminal = 0.12        # m/s, mas suave que v_max para precision
@@ -229,20 +229,46 @@ class ControlTrayectoria(Node):
         if ids is not None:
             cv2.aruco.drawDetectedMarkers(cv_image, corners, ids)
             
-            if 1 in ids: # El cubo meta usa el ID 1 en sus caras laterales
-                idx = list(ids.flatten()).index(1)
+            indices_id1 = [i for i, val in enumerate(ids.flatten()) if val == 1]
+            if indices_id1: # El cubo meta usa el ID 1 en sus caras laterales
+                mejor_idx = indices_id1[0]
+                max_area = 0
+                for i in indices_id1:
+                    esq = corners[i][0]
+                    lado_sup = np.linalg.norm(esq[0] - esq[1])
+                    lado_der = np.linalg.norm(esq[1] - esq[2])
+                    area = lado_sup * lado_der
+                    if area > max_area:
+                        max_area = area
+                        mejor_idx = i
+                        
+                idx = mejor_idx
                 esquinas = corners[idx][0]
-                # Centroide del ArUco
+                # Centroide del ArUco (en píxeles)
                 self.marker_cx = np.mean(esquinas[:, 0])
-                # Lados para área y asimetría
-                lado_sup = np.linalg.norm(esquinas[0] - esquinas[1])
-                lado_der = np.linalg.norm(esquinas[1] - esquinas[2])
-                lado_inf = np.linalg.norm(esquinas[2] - esquinas[3])
-                lado_izq = np.linalg.norm(esquinas[3] - esquinas[0])
-                self.marker_area = lado_sup * lado_der
                 
-                promedio = (lado_der + lado_izq) / 2.0
-                self.marker_asymmetry = (lado_der - lado_izq) / promedio if promedio > 0 else 0.0
+                # --- Cálculo Robusto de Asimetría (Orientación 3D) con solvePnP ---
+                # Al estar la cámara más alta y tener inclinación (pitch), las líneas verticales
+                # del ArUco se ven diagonales por la perspectiva. Medir píxeles ya no funciona.
+                # Usamos los intrínsecos teóricos de la cámara (FOV 60 deg, 640x480):
+                fx = 320.0 / math.tan(1.0472 / 2.0)
+                cam_mat = np.array([[fx, 0, 320.0], [0, fx, 240.0], [0, 0, 1]], dtype=np.float32)
+                dist_coeffs = np.zeros((4,1), dtype=np.float32)
+                
+                # Puntos 3D del marcador (asumiendo 18 cm de tamaño)
+                s = 0.09
+                obj_pts = np.array([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float32)
+                
+                success, rvec, tvec = cv2.solvePnP(obj_pts, esquinas, cam_mat, dist_coeffs)
+                if success:
+                    rmat, _ = cv2.Rodrigues(rvec)
+                    # La normal del ArUco es la 3ra columna de la matriz de rotación
+                    normal_x = rmat[0, 2]
+                    # Si el robot está a la derecha del cubo, la normal apunta a la izquierda (-X)
+                    # Queremos que la asimetría sea positiva para hacer strafe a la izquierda (+Y)
+                    self.marker_asymmetry = -normal_x
+                else:
+                    self.marker_asymmetry = 0.0
             else:
                 self.marker_cx = None
                 self.marker_area = None
@@ -557,7 +583,7 @@ class ControlTrayectoria(Node):
             cmd.linear.y = max(min(strafe_cmd, 0.15), -0.15)
             
             # 3. Avance: controlar distancia con LiDAR (más robusto que el área en píxeles)
-            distancia_objetivo = 0.3# Queremos estacionarnos a 25 cm del cubo
+            distancia_objetivo = 0.5 # Distancia de estacionamiento (modificado para quedar más lejos)
             dist_err = self.min_dist_frontal - distancia_objetivo
             
             self.vs_v_integral += dist_err * dt
@@ -576,7 +602,7 @@ class ControlTrayectoria(Node):
                 cmd.linear.x = 0.0
             
             # 4. Condición de Paro: Distancia correcta (LiDAR), marker MUY centrado y asimetría mínima
-            if abs(dist_err) < 0.05 and abs(err_x) < 15 and abs(self.marker_asymmetry) < 0.05:
+            if abs(dist_err) < 0.05 and abs(err_x) < 15 and abs(self.marker_asymmetry) < 0.015:
                 cmd.linear.x = 0.0
                 cmd.linear.y = 0.0
                 cmd.angular.z = 0.0
