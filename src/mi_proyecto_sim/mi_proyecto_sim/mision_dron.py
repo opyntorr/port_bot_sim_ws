@@ -32,19 +32,30 @@ try:
 except ImportError:
     _HAS_TELLO_ACTION = False
 
-def make_range_points(n, min_value=-1.3, max_value=1.3):
+def make_range_points(n, min_value, max_value):
+    if n == 1:
+        return [(min_value + max_value) / 2]
+
     step = (max_value - min_value) / (n - 1)
     return [min_value + i * step for i in range(n)]
 
+def make_grid(cols, rows):
+    x_points = make_range_points(cols, -1.6, 1.6)
+    y_points = make_range_points(rows, -1.3, 1.6)
+
+    return [(x, y) for y in y_points for x in x_points]
+
 # Patron serpiente en grid 3x3 (todos a z=2.5m). Spacing 1.3m para ~60% overlap.
 # Cobertura: -1.3m a 1.3m en X e Y.
-_Z = 2.5
+_Z = 2.2
 WAYPOINTS = []
 GRID_SIZE = 5
-_COLS = make_range_points(GRID_SIZE)
-_ROWS = list(reversed(make_range_points(GRID_SIZE)))
+_COLS = make_range_points(GRID_SIZE, -1.6, 1.6)
+_ROWS = list(reversed(make_range_points(GRID_SIZE, -1.3, 1.6)))
+
 for i, y in enumerate(_ROWS):
     row = _COLS if i % 2 == 0 else list(reversed(_COLS))
+
     for x in row:
         WAYPOINTS.append((x, y, _Z))
 
@@ -193,6 +204,7 @@ class MisionDron(Node):
             return
 
         if self.state == 'INIT':
+            #self._publish_target(0.0, 0.0, _Z)
             if self.latest_image is None or self.current_pose is None:
                 return
             self.get_logger().info('Camara y odom OK. Despegando...')
@@ -202,6 +214,7 @@ class MisionDron(Node):
             return
 
         if self.state == 'TAKEOFF':
+            #self._publish_targetself._publish_target(0.0, 0.0, _Z)
             if self.current_pose[2] > 0.8 and (now - self.takeoff_t) > 4.0:
                 self.get_logger().info('En aire. Iniciando waypoints...')
                 self.state = 'GOTO_WP'
