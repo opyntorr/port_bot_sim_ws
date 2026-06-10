@@ -15,6 +15,9 @@
   <xacro:macro name="jetauto_sensors" params="prefix">
 
     <!-- ===================== LiDAR (RPLIDAR A1) ===================== -->
+    <!-- Solo cuando NO se usa el soporte 3D. Con use_soporte:=true, el MS200 sobre el
+         soporte provee /scan en el frame lidar_frame (ver jetauto_soporte.urdf.xacro). -->
+    <xacro:unless value="$(arg use_soporte)">
     <link name="${prefix}lidar_link">
       <inertial>
         <origin xyz="-0.0157049024536227 0.000340793431659825 -0.0214732100882973" rpy="0 0 0"/>
@@ -45,14 +48,15 @@
     <gazebo reference="${prefix}lidar_frame">
       <sensor name="${prefix}lidar_a1" type="gpu_lidar">
         <topic>scan</topic>
-        <update_rate>10</update_rate>
+        <!-- sim-to-real: lidar real medido a ~7.65 Hz (scan_time 0.131 s), 360 pts (1 deg) -->
+        <update_rate>7.65</update_rate>
         <always_on>1</always_on>
         <visualize>false</visualize>
         <gz_frame_id>${prefix}lidar_frame</gz_frame_id>
         <lidar>
           <scan>
             <horizontal>
-              <samples>720</samples>
+              <samples>360</samples>   <!-- 1 grado/punto, como el lidar real (angle_increment 0.0175) -->
               <resolution>1</resolution>
               <min_angle>-3.14159265</min_angle>
               <max_angle>3.14159265</max_angle>
@@ -77,6 +81,60 @@
         </lidar>
       </sensor>
     </gazebo>
+    </xacro:unless>
+
+    <!-- ===== RPLIDAR A1 SECUNDARIO (cuando hay soporte): mismo pod en su posicion original,
+         pero en frame lidar_a1_frame y publicando en /scan_a1. Presente pero NO lo usa nav
+         (el MS200 es /scan). Para activarlo en nav, remapea /scan_a1 -> /scan donde toque. -->
+    <xacro:if value="$(arg use_soporte)">
+    <link name="${prefix}lidar_link">
+      <inertial>
+        <origin xyz="-0.0157049024536227 0.000340793431659825 -0.0214732100882973" rpy="0 0 0"/>
+        <mass value="0.0522535578752524"/>
+        <inertia ixx="1.4542908499666E-05" ixy="4.8193721668021E-08" ixz="2.30575406031324E-07"
+                 iyy="1.85618648837978E-05" iyz="-1.29750110413905E-08" izz="3.10574357987674E-05"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${mesh_dir}/lidar_link.stl"/></geometry>
+        <material name="lidar_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}lidar_joint" type="fixed">
+      <origin xyz="0.0959394346777203 -1.03974386779226E-05 0.128396206697751" rpy="0 0 0"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}lidar_link"/>
+    </joint>
+    <link name="${prefix}lidar_a1_frame"/>
+    <joint name="${prefix}lidar_a1_frame_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 ${M_PI}"/>
+      <parent link="${prefix}lidar_link"/>
+      <child  link="${prefix}lidar_a1_frame"/>
+    </joint>
+    <gazebo reference="${prefix}lidar_a1_frame">
+      <sensor name="${prefix}lidar_a1" type="gpu_lidar">
+        <topic>scan_a1</topic>
+        <update_rate>7.65</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <gz_frame_id>${prefix}lidar_a1_frame</gz_frame_id>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>360</samples><resolution>1</resolution>
+              <min_angle>-3.14159265</min_angle><max_angle>3.14159265</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples><resolution>1</resolution>
+              <min_angle>0</min_angle><max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range><min>0.15</min><max>12.0</max><resolution>0.013</resolution></range>
+          <noise><type>gaussian</type><mean>0.0</mean><stddev>0.01</stddev></noise>
+        </lidar>
+      </sensor>
+    </gazebo>
+    </xacro:if>
 
     <!-- ===================== IMU (MPU-6050) ===================== -->
     <link name="${prefix}imu_link">

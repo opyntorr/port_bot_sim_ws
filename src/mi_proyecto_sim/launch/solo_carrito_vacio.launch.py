@@ -108,13 +108,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    filtro_lidar_node = Node(
-        package='mi_proyecto_sim',
-        executable='filtro_lidar.py',
-        name='filtro_lidar',
-        output='screen',
-        parameters=[{'use_sim_time': True}],
-    )
 
     return LaunchDescription([
         set_env,
@@ -126,5 +119,4 @@ def generate_launch_description():
         rviz_node,
         joy_node,
         teleop,
-        filtro_lidar_node,
     ])

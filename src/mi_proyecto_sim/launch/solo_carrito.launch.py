@@ -128,13 +128,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    filtro_lidar_node = Node(
-        package='mi_proyecto_sim',
-        executable='filtro_lidar.py',
-        name='filtro_lidar',
-        output='screen',
-        parameters=[{'use_sim_time': True}],
-    )
 
     # =========================================================
     # ARTEFACTOS DE LA CORRIDA ANTERIOR (MISION DRON)
@@ -262,7 +255,6 @@ def generate_launch_description():
         rviz_node,
         joy_node,
         teleop,
-        filtro_lidar_node,
         map_server_node,
         lifecycle_manager_node,
         publicador_tfs_node,

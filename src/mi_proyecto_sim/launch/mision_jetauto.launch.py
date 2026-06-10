@@ -97,9 +97,6 @@ def generate_launch_description():
         condition=IfCondition(use_slam))
 
     # ---- CEREBRO (mi_proyecto_sim) ----
-    filtro_lidar = Node(
-        package='mi_proyecto_sim', executable='filtro_lidar.py',
-        name='filtro_lidar', output='screen')
 
     planificador = Node(
         package='mi_proyecto_sim', executable='planificador_rrt',
@@ -146,7 +143,6 @@ def generate_launch_description():
         base,
         camara,
         slam,
-        filtro_lidar,
         planificador,
         control,
         # modo sin dron:

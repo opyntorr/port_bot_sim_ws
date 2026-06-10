@@ -214,13 +214,6 @@ def generate_launch_description():
     )
 
     # 8. Filtro LiDAR (Software 190 grados)
-    filtro_lidar_node = Node(
-        package='mi_proyecto_sim',
-        executable='filtro_lidar.py',
-        name='filtro_lidar',
-        output='screen',
-        parameters=[{'use_sim_time': True}]
-    )
 
     # SLAM Toolbox oficial - usa online_async_launch.py con yaml dedicado
     # (patron tomado de dinav2/warehouse_bot, mantiene scan_topic=/scan_filtered)
@@ -447,7 +440,6 @@ def generate_launch_description():
         joy_node,
         teleop,
         detector_aruco_node,
-        filtro_lidar_node,
         # Mision del dron + control de posicion (tello_control_pos)
         optitrack_sim,
         pose_fuser,

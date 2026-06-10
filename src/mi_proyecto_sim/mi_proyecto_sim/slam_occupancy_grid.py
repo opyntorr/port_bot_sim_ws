@@ -94,8 +94,9 @@ class SlamOccupancyGrid(Node):
         qos_scan = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST, depth=5)
+        scan_topic = self.declare_parameter('scan_topic', '/scan').get_parameter_value().string_value
         self.scan_sub = self.create_subscription(
-            LaserScan, '/scan_filtered', self._scan_cb, qos_scan)
+            LaserScan, scan_topic, self._scan_cb, qos_scan)
 
         # Odometr  a directa (el bridge no publica TF odom   base_footprint)
         qos_odom = QoSProfile(

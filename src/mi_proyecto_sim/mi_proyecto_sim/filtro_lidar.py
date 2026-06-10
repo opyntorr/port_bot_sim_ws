@@ -27,14 +27,25 @@ class FiltroLidar(Node):
         self.declare_parameter('self_clearance', 0.30)
         self.self_clearance = self.get_parameter('self_clearance').value
 
+        # FOV util del filtro (semiangulo en grados). El recorte a +-95 (190 FOV) era para el
+        # RPLIDAR A1, que solo veia ~190 (la parte trasera la tapaba el cuerpo). El MS200 ve
+        # 360 reales y va montado alto sobre el soporte -> ahora 180 (= 360 completo, sin recorte
+        # angular) para que la evasion del control aproveche toda la vuelta. El self_clearance
+        # sigue descartando los auto-golpes del propio robot/soporte. Para volver al recorte
+        # del A1: poner half_fov_deg=95.
+        self.declare_parameter('half_fov_deg', 180.0)
+        self.half_fov = float(self.get_parameter('half_fov_deg').value) * math.pi / 180.0
+
         # En ros_gz_bridge usualmente se rutea como BEST_EFFORT por el tamaño
         self.sub = self.create_subscription(LaserScan, '/scan', self.scan_callback, qos_profile)
-        
-        # Publicador del escaner filtrado (usaremos BEST_EFFORT para empatar si es necesario, 
+
+        # Publicador del escaner filtrado (usaremos BEST_EFFORT para empatar si es necesario,
         # pero RELIABLE es por defecto en rclpy. Lo dejamos por defecto para que SLAM lo lea facilmente)
         self.pub = self.create_publisher(LaserScan, '/scan_filtered', 10)
-        
-        self.get_logger().info("Filtro Lidar a 190º inicializado. Escuchando en /scan, publicando en /scan_filtered")
+
+        self.get_logger().info(
+            f"Filtro Lidar a {2*math.degrees(self.half_fov):.0f}deg FOV "
+            f"(self_clearance={self.self_clearance:.2f}m) inicializado. /scan -> /scan_filtered")
 
     def scan_callback(self, msg):
         import array
@@ -49,19 +60,20 @@ class FiltroLidar(Node):
         filtered_msg.range_min = float(msg.range_min)
         filtered_msg.range_max = float(msg.range_max)
         
-        # Angulos limite en radianes (+- 95 grados para un fov de 190)
-        min_valid_angle = -95.0 * math.pi / 180.0
-        max_valid_angle = 95.0 * math.pi / 180.0
-        
+        # Arco util: +- half_fov (default 180 = 360 completo, sin recorte angular)
+        min_valid_angle = -self.half_fov
+        max_valid_angle = self.half_fov
+        full_fov = self.half_fov >= math.pi - 1e-6  # 360: aceptar todos los angulos
+
         new_ranges = []
         new_intensities = []
         has_intensities = len(msg.intensities) > 0
 
         for i, r in enumerate(msg.ranges):
             angle = msg.angle_min + i * msg.angle_increment
-            # Fuera del arco util (+-95) o dentro del radio de auto-oclusion (la propia
+            # Fuera del arco util o dentro del radio de auto-oclusion (la propia
             # estructura del robot) -> invalido (inf).
-            if min_valid_angle <= angle <= max_valid_angle and r >= self.self_clearance:
+            if (full_fov or (min_valid_angle <= angle <= max_valid_angle)) and r >= self.self_clearance:
                 new_ranges.append(float(r))
                 if has_intensities:
                     new_intensities.append(float(msg.intensities[i]))

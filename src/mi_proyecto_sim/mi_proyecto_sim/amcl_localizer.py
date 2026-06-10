@@ -122,7 +122,8 @@ class AmclLocalizer(Node):
             history=HistoryPolicy.KEEP_LAST, depth=5,
         )
         self.create_subscription(OccupancyGrid, '/map', self._map_cb, qos_map)
-        self.create_subscription(LaserScan, '/scan_filtered', self._scan_cb, qos_be)
+        scan_topic = self.declare_parameter('scan_topic', '/scan').get_parameter_value().string_value
+        self.create_subscription(LaserScan, scan_topic, self._scan_cb, qos_be)
         self.create_subscription(Odometry, '/odom', self._odom_cb, qos_be)
         self.create_subscription(PoseWithCovarianceStamped, '/initialpose',
                                  self._initpose_cb, 10)

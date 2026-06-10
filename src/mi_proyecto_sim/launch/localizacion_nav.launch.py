@@ -110,13 +110,6 @@ def generate_launch_description():
         }.items(),
     )
 
-    filtro_lidar_node = Node(
-        package='mi_proyecto_sim',
-        executable='filtro_lidar.py',
-        name='filtro_lidar',
-        output='screen',
-        parameters=[{'use_sim_time': True}],
-    )
 
     # =========================================================
     # MAPA PREVIO (solo /map_dron, frame map_dron_origin) -> para planificador_rrt.
@@ -279,7 +272,6 @@ def generate_launch_description():
         gazebo,
         puente,
         jetauto,
-        filtro_lidar_node,
         map_server_planner,
         joy_node,
         teleop,

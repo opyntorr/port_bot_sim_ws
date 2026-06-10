@@ -110,13 +110,6 @@ def generate_launch_description():
         output='screen',
     )
 
-    filtro_lidar_node = Node(
-        package='mi_proyecto_sim',
-        executable='filtro_lidar.py',
-        name='filtro_lidar',
-        output='screen',
-        parameters=[{'use_sim_time': True}],
-    )
 
     slam_toolbox_launch = TimerAction(
         period=5.0,
@@ -157,7 +150,6 @@ def generate_launch_description():
         jetauto,
         joy_node,
         teleop,
-        filtro_lidar_node,
         slam_toolbox_launch,
         rviz_node,
     ])

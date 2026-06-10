@@ -1,0 +1,211 @@
+<?xml version="1.0"?>
+<!--
+  ===========================================================================
+  Soporte impreso (Hiwonder "Legera") acoplado al soporte de pantalla del JetAuto,
+  con ArUco 3D (ID 4, dict 4X4_50) + LiDAR MS200 funcional encima.
+  ===========================================================================
+  Cadena de frames:
+    base_link
+      -> screen_link              (soporte de pantalla, malla real, decorativo/anclaje)
+          -> support_link          (tu "Legera", malla en mm -> scale 0.001)
+              -> aruco_link         (cara BLANCA del marcador)  + aruco_black_link (cara NEGRA)
+              -> ms200_link          -> lidar_frame  (gpu_lidar gz -> /scan)
+              -> (jetson: pendiente de separar en grupos de color)
+
+  UNIDADES: las mallas extra (aruco4_*, Legera, jetson) estan en MILIMETROS -> scale 0.001.
+            screen_link.stl (jetauto) esta en METROS -> sin scale.
+
+  >>> POSES MARCADAS CON "AJUSTAR": son un primer tiro razonable. Verifica en RViz/gz
+      y afina estos numeros (es inevitable iterar sobre el acople fisico).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:property name="mesh"  value="file://$(find mi_proyecto_sim)/meshes/jetauto"/>
+  <xacro:property name="extra" value="file://$(find mi_proyecto_sim)/meshes/jetauto/extra"/>
+  <xacro:property name="mm"    value="0.001 0.001 0.001"/>
+
+  <!-- ============ poses ajustables ============ -->
+  <!-- soporte de pantalla -> base_link (tomado del jetauto_description real) -->
+  <xacro:property name="screen_xyz" value="-0.13449 0 0.082796"/>
+  <xacro:property name="screen_rpy" value="0 0 1.5708"/>
+  <!-- support (Legera) -> base_link.  Rotado ~66deg en X para que la plataforma hexagonal apoye
+       sobre el soporte de pantalla y el ArUco/lidar queden HORIZONTALES. xyz: AJUSTAR posicion. -->
+  <xacro:property name="support_xyz" value="-0.075 0 0.195"/>
+  <xacro:property name="support_rpy" value="1.15192 0 -1.5708"/>   <!-- tilt 66deg X + yaw -90deg Z (conjunto completo) -->
+
+  <!-- ArUco -> support_link.  EXACTO del CAD (Legera Aero.STEP): inclinado ~66deg, arriba,
+       centrado en X (mirando arriba/atras para que el dron lo vea). -->
+  <xacro:property name="aruco_xyz" value="-0.075 0.0162 0.0867"/>   <!-- relativo al CENTRO del soporte -->
+  <xacro:property name="aruco_rpy" value="-1.15192 0 0"/>
+
+  <!-- MS200 (cuerpo visual) -> support_link.  El cuerpo se para VERTICAL (eje de giro hacia arriba),
+       coincidiendo con el plano de barrido horizontal del lidar_frame. Asi la malla real (cara redonda
+       arriba, 4 barrenos) se ve como un MS200 de verdad y no acostado de lado. -->
+  <xacro:property name="ms200_xyz" value="0.0 0.1003 -0.0657"/>   <!-- relativo al CENTRO del soporte -->
+  <xacro:property name="ms200_rpy" value="0 1.15192 1.5708"/>     <!-- = lidar_frame_rpy: eje de giro vertical -->
+
+  <!-- lidar_frame (scan) -> support_link, HORIZONTAL: cancela la rotacion del soporte (-66deg X)
+       para que el barrido quede paralelo al piso aunque el cuerpo del MS200 vaya inclinado. -->
+  <xacro:property name="lidar_frame_rpy" value="0 1.15192 1.5708"/>   <!-- cancela tilt+yaw del soporte -> scan horizontal -->
+
+  <xacro:macro name="jetauto_soporte" params="prefix">
+
+    <!-- ===================== soporte de pantalla (anclaje) ===================== -->
+    <link name="${prefix}screen_link">
+      <inertial>
+        <origin xyz="0.000376 -0.010413 0.104077" rpy="0 0 0"/>
+        <mass value="0.247926"/>
+        <inertia ixx="0.000179151" ixy="-8.3558e-08" ixz="1.8154e-07"
+                 iyy="0.000605838" iyz="6.31092e-05" izz="0.000485524"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${mesh}/screen_bracket.stl"/></geometry>   <!-- solo bracket+tornillos, sin panel -->
+        <material name="screen_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}screen_joint" type="fixed">
+      <origin xyz="${screen_xyz}" rpy="${screen_rpy}"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}screen_link"/>
+    </joint>
+    <gazebo reference="${prefix}screen_link">
+      <visual><material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material></visual>
+    </gazebo>
+
+    <!-- ===================== support (Legera) ===================== -->
+    <link name="${prefix}support_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.20"/>
+        <inertia ixx="1.2e-3" ixy="0" ixz="0" iyy="1.2e-3" iyz="0" izz="1.2e-3"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${extra}/Legera_centered.STL" scale="${mm}"/></geometry>   <!-- recentrado: origen al centro del soporte -->
+        <material name="support_grey"><color rgba="0.25 0.25 0.27 1.0"/></material>
+      </visual>
+      <!-- SIN colision: el lidar va a la altura del soporte y el gpu_lidar veria esta caja
+           como auto-golpe. Quitada para que el /scan crudo salga limpio en 360 (sin filtro). -->
+    </link>
+    <joint name="${prefix}support_joint" type="fixed">
+      <origin xyz="${support_xyz}" rpy="${support_rpy}"/>
+      <parent link="${prefix}base_link"/>
+      <child  link="${prefix}support_link"/>
+    </joint>
+    <gazebo reference="${prefix}support_link">
+      <visual><material><ambient>0.25 0.25 0.27 1</ambient><diffuse>0.25 0.25 0.27 1</diffuse></material></visual>
+    </gazebo>
+
+    <!-- ===================== ArUco 3D (ID 4) ===================== -->
+    <!-- cara BLANCA (fondo / cuadros hundidos) = link base; lleva la inercia -->
+    <link name="${prefix}aruco_link">
+      <inertial>
+        <origin xyz="0.075 0.075 0.002" rpy="0 0 0"/>
+        <mass value="0.03"/>
+        <inertia ixx="6e-5" ixy="0" ixz="0" iyy="6e-5" iyz="0" izz="1.1e-4"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${extra}/aruco4_white.stl" scale="${mm}"/></geometry>
+        <material name="aruco_white"><color rgba="0.95 0.95 0.95 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}aruco_joint" type="fixed">
+      <origin xyz="${aruco_xyz}" rpy="${aruco_rpy}"/>
+      <parent link="${prefix}support_link"/>
+      <child  link="${prefix}aruco_link"/>
+    </joint>
+    <!-- cara NEGRA (relieve alto = modulos negros del marcador) -->
+    <link name="${prefix}aruco_black_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="${extra}/aruco4_black.stl" scale="${mm}"/></geometry>
+        <material name="aruco_black"><color rgba="0.02 0.02 0.02 1.0"/></material>
+      </visual>
+    </link>
+    <joint name="${prefix}aruco_black_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="${prefix}aruco_link"/>
+      <child  link="${prefix}aruco_black_link"/>
+    </joint>
+    <gazebo reference="${prefix}aruco_link">
+      <visual><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material></visual>
+    </gazebo>
+    <gazebo reference="${prefix}aruco_black_link">
+      <visual><material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material></visual>
+    </gazebo>
+
+    <!-- ===================== LiDAR MS200 (funcional -> /scan) ===================== -->
+    <!-- cuerpo del MS200 = malla CAD real re-teselada con gmsh (conforme, watertight, SIN huecos)
+         y recortada: SIN el bracket inferior de 4 barrenos ni el boss del conector (la unidad real
+         no los trae) -> solo el cubito (37x37x18mm) + turret cilindrico (Ø35x12mm) encima.
+         Eje de giro = +Z, conjunto centrado en Z (-14.5..+14.5mm). Malla en mm -> scale 0.001. -->
+    <link name="${prefix}ms200_link">
+      <inertial>
+        <mass value="0.05"/>
+        <inertia ixx="2e-5" ixy="0" ixz="0" iyy="2e-5" iyz="0" izz="2e-5"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/> <!-- Desplazamiento horizontal local (compensar recorte) -->
+        <geometry><mesh filename="${extra}/ms200_body.stl" scale="${mm}"/></geometry>
+        <material name="ms200_black"><color rgba="0.05 0.05 0.05 1.0"/></material>
+      </visual>
+      <!-- SIN colision: el cuerpo del MS200 esta justo donde nace el scan; con colision el
+           gpu_lidar se veria a si mismo (~2cm). Quitada -> /scan crudo limpio en 360. -->
+    </link>
+    <joint name="${prefix}ms200_joint" type="fixed">
+      <origin xyz="${ms200_xyz}" rpy="${ms200_rpy}"/>
+      <parent link="${prefix}support_link"/>
+      <child  link="${prefix}ms200_link"/>
+    </joint>
+    <gazebo reference="${prefix}ms200_link">
+      <visual><material><ambient>0.05 0.05 0.05 1</ambient><diffuse>0.05 0.05 0.05 1</diffuse></material></visual>
+    </gazebo>
+
+    <!-- frame del scan: SE CONSERVA EL NOMBRE lidar_frame para no romper SLAM/AMCL/nav.
+         Cuelga del support_link (no del cuerpo del MS200) para mantener el scan HORIZONTAL. -->
+    <link name="${prefix}lidar_frame"/>
+    <joint name="${prefix}lidar_frame_joint" type="fixed">
+      <origin xyz="${ms200_xyz}" rpy="${lidar_frame_rpy}"/>
+      <parent link="${prefix}support_link"/>
+      <child  link="${prefix}lidar_frame"/>
+    </joint>
+
+    <gazebo reference="${prefix}lidar_frame">
+      <sensor name="${prefix}ms200" type="gpu_lidar">
+        <topic>scan</topic>
+        <!-- Specs IGUALADAS al MS200 real (driver oradar en el Nano, medido/config):
+             15 Hz (motor_speed=15), ~300 pts/scan (15 Hz -> ~4500 pts/s), 360 deg,
+             rango 0.03-12 m, ruido sigma 0.0043 m (caracterizacion estatica en piso). -->
+        <update_rate>15</update_rate>
+        <always_on>1</always_on>
+        <visualize>false</visualize>
+        <gz_frame_id>${prefix}lidar_frame</gz_frame_id>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>300</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159265</min_angle>
+              <max_angle>3.14159265</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples><resolution>1</resolution>
+              <min_angle>0</min_angle><max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.03</min>
+            <max>12.0</max>
+            <resolution>0.01</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type><mean>0.0</mean><stddev>0.0043</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+    </gazebo>
+
+  </xacro:macro>
+</robot>

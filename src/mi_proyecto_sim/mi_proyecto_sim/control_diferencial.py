@@ -87,7 +87,9 @@ class ControlDiferencial(Node):
             depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT
         )
-        self.scan_sub = self.create_subscription(LaserScan, '/scan_filtered', self.scan_callback, qos_scan)
+        # scan_topic: por defecto /scan (sim sin filtro). El robot real pasa /scan_filtered.
+        scan_topic = self.declare_parameter('scan_topic', '/scan').get_parameter_value().string_value
+        self.scan_sub = self.create_subscription(LaserScan, scan_topic, self.scan_callback, qos_scan)
         self.last_log_time = None
 
         self.timer = self.create_timer(0.05, self.control_loop)

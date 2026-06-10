@@ -160,6 +160,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': False,
+            'scan_topic': '/scan_filtered',  # robot real: conserva filtro_lidar (self_clearance)
         }],
     )
 

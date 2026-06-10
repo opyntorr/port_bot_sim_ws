@@ -19,11 +19,15 @@
 
   <xacro:arg name="prefix"     default=""/>
   <xacro:arg name="use_aruco"  default="true"/>
+  <!-- use_soporte=true (DEFAULT): soporte 3D (Legera) + ArUco 3D + MS200 (/scan, lidar_frame) +
+       A1 secundario (/scan_a1). use_soporte=false: config original (A1 en /scan, ArUco plano). -->
+  <xacro:arg name="use_soporte" default="true"/>
 
   <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_base.urdf.xacro"/>
   <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_mecanum_wheel.urdf.xacro"/>
   <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_sensors.urdf.xacro"/>
   <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_control.urdf.xacro"/>
+  <xacro:include filename="$(find mi_proyecto_sim)/urdf/jetauto/jetauto_soporte.urdf.xacro"/>
 
   <!-- chassis + decorative shells -->
   <xacro:jetauto_base prefix="$(arg prefix)"/>
@@ -40,8 +44,9 @@
   <!-- velocity ros2_control + ign_ros2_control -->
   <xacro:jetauto_control prefix="$(arg prefix)"/>
 
-  <!-- ArUco marker on the roof (used by the drone/mission to localize the carrito).
-       Same as the original carrito_con_aruco; toggle with use_aruco:=false. -->
+  <!-- ArUco PLANO en el techo (config original). Solo cuando NO se usa el soporte 3D;
+       con use_soporte:=true lo reemplaza el ArUco 3D del jetauto_soporte. -->
+  <xacro:unless value="$(arg use_soporte)">
   <xacro:if value="$(arg use_aruco)">
     <link name="techo_aruco_link">
       <visual>
@@ -72,6 +77,12 @@
       <child  link="techo_aruco_link"/>
       <origin xyz="0 0 0.22" rpy="0 0 0"/>
     </joint>
+  </xacro:if>
+  </xacro:unless>
+
+  <!-- Soporte 3D (Legera) + ArUco 3D (ID 4) + MS200 funcional sobre el soporte. -->
+  <xacro:if value="$(arg use_soporte)">
+    <xacro:jetauto_soporte prefix="$(arg prefix)"/>
   </xacro:if>
 
 </robot>
