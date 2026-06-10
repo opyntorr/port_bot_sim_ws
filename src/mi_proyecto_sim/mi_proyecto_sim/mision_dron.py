@@ -67,7 +67,8 @@ POS_TOL = 0.25
 POS_TOL_EXIT = 0.50   # hysteresis: solo reinicia el temporizador si se aleja más de esto
 SETTLE_TIME = 1.5
 TAKEOFF_Z = 0.4       # altura fusionada mínima para considerar el despegue completo
-TAKEOFF_TIMEOUT = 15.0  # s en TAKEOFF sin pasar la compuerta -> abortar y aterrizar
+TAKEOFF_TIMEOUT = 20.0  # s en TAKEOFF sin pasar la compuerta -> abortar y aterrizar
+                        # (> 10 s de timeout djitellopy + 0.5 s veredicto TOF + 1 s gracia)
 POSE_STALE_S = 1.0    # edad máxima de /odometry/filtered antes de avisar
 
 def _find_ws_root() -> Path:
