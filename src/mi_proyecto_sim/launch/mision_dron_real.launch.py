@@ -79,6 +79,7 @@ def generate_launch_description():
             {'velocity_scale': 100.0},
             {'kp': 0.4},
             {'ki': 0.15},
+            {'ki_z': 0.35},
             {'kd': 0.35},
             {'use_flight_state': True},
             {'cmd_pub_rate': 20.0},
