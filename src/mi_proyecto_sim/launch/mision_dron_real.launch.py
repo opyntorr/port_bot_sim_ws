@@ -78,7 +78,7 @@ def generate_launch_description():
             {'use_sim_time': False},
             {'velocity_scale': 100.0},
             {'kp': 0.4},
-            {'ki': 0.05},
+            {'ki': 0.15},
             {'kd': 0.35},
             {'use_flight_state': True},
             {'cmd_pub_rate': 20.0},
