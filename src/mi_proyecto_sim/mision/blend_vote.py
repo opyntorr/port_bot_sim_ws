@@ -685,6 +685,7 @@ def build_final_label(
     occ_min_frac: float = 0.12,
     occ_close_px: int = 12,
     wall_boundary_px: int = 150,
+    is_sim: bool = False,
 ) -> np.ndarray:
     """Build a clean occupancy label map purely from color segmentation of the mosaic.
 
@@ -707,12 +708,13 @@ def build_final_label(
     # Keep tape grid from voting (reliable, distinctive orange colour).
     label_out[label_grid_ref == L_GRID] = L_GRID
 
-    # ── Obstacle: detect on the blended mosaic using LAB b* channel.
-    # b* < 128 = blue-shifted; floor is weakly blue (b* ~110-127), real boxes are
-    # strongly blue/cyan (b* < 100).  This threshold cleanly separates them where
-    # HSV value alone fails because the simulation floor is a dark blue-gray.
-    lab_mosaic = cv2.cvtColor(mosaic, cv2.COLOR_BGR2LAB)
-    om = (lab_mosaic[:, :, 2].astype(np.int16) < 110).astype(np.uint8) * 255
+    # ── Obstacle: detect on the blended mosaic using HSV color ranges.
+    # Cajas amarillas y paredes marrones invertidas de RGB a BGR se ven azules/cianes
+    hsv = cv2.cvtColor(mosaic, cv2.COLOR_BGR2HSV)
+    obs_box  = cv2.inRange(hsv, (90, 50, 40), (130, 255, 255))    # cajas/paredes (color azul/cian)
+    obs_wall = np.zeros_like(obs_box)                             # ya cubierto en obs_box
+    om = cv2.bitwise_or(obs_box, obs_wall)
+
     om[~interior_mask] = 0
     if occ_close_px > 0:
         kc = np.ones((occ_close_px * 2 + 1, occ_close_px * 2 + 1), np.uint8)
@@ -735,8 +737,11 @@ def build_final_label(
         if area < 400:
             continue
         if area > MAX_BOX_AREA:
-            # Large blob → keep convex hull, no geometric fitting
-            cv2.fillPoly(occ_shapes, [cv2.convexHull(cnt)], 255)
+            # Large blob (likely a hollow perimeter wall or connected structure)
+            # Do NOT use convex hull, just keep its exact original pixels from 'om'
+            mask = np.zeros_like(om)
+            cv2.drawContours(mask, [cnt], 0, 255, -1)
+            occ_shapes |= (om & mask)
             continue
         perim = cv2.arcLength(cnt, True)
         circularity = (4 * np.pi * area / (perim * perim)) if perim > 0 else 0

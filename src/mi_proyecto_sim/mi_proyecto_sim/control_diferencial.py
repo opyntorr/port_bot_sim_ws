@@ -41,15 +41,15 @@ class ControlDiferencial(Node):
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_pose)
         
         # Kelly & Diaz Parameters
-        self.h = 0.25
+        self.h = 0.30   # punto de control K&D; subido de 0.25 (era del Rosmaster X3, mas chico) al tamano del JetAuto: giros mas suaves
         self.k_px = 1.5
         self.k_py = 1.5        
-        self.v_max = 0.35
-        self.w_max = 1.0
+        self.v_max = 0.20      # m/s (coherente con cap chassis 0.25; conservador para SLAM)
+        self.w_max = 0.5       # rad/s (giro suave; coherente con cap chassis 0.5)
 
         self.v_prev = 0.0
         self.w_prev = 0.0
-        self.lookahead_dist = 0.12
+        self.lookahead_dist = 0.15   # subido de 0.12; reduce serpenteo sin cortar curvas
         
         self.current_target_index = 0
         self.ruta_completada = False
@@ -100,19 +100,42 @@ class ControlDiferencial(Node):
         self._alignment_ready = bool(msg.data)
 
     def path_callback(self, msg):
-        self.get_logger().info("Ruta recibida. Iniciando seguimiento diferencial...")
-        self.path_points = []
+        nueva = []
         for pose_stamped in msg.poses:
-            x = pose_stamped.pose.position.x
-            y = pose_stamped.pose.position.y
-            self.path_points.append((x, y))
-            
-        self.current_target_index = 0
-        self.last_target_index = 0
+            nueva.append((pose_stamped.pose.position.x, pose_stamped.pose.position.y))
+        if not nueva:
+            return
+
+        tenia_ruta = bool(self.path_points)
+        self.path_points = nueva
+
+        # NO reiniciar el progreso a 0 si ya ibamos siguiendo una ruta: el RRT replanifica
+        # cada ~1s (para obstaculos dinamicos) y resetear a 0 cada vez TRABA al robot
+        # (avanza, llega ruta nueva, vuelve al inicio, tiembla). En cambio, retomamos desde
+        # el waypoint mas cercano a la pose actual -> el seguimiento continua sin saltos.
+        if tenia_ruta and self._clock_initialized:
+            x, y, theta = self.get_current_pose()
+            if x is not None:
+                xc = x + self.h * math.cos(theta)
+                yc = y + self.h * math.sin(theta)
+                idx_cercano = min(
+                    range(len(nueva)),
+                    key=lambda i: (nueva[i][0]-xc)**2 + (nueva[i][1]-yc)**2)
+                self.current_target_index = idx_cercano
+                self.last_target_index = idx_cercano
+            else:
+                self.current_target_index = 0
+                self.last_target_index = 0
+        else:
+            # primera ruta: empezar desde el principio
+            self.get_logger().info("Ruta recibida. Iniciando seguimiento diferencial...")
+            self.current_target_index = 0
+            self.last_target_index = 0
+            self.pure_rotation_mode = True
+
         if self._clock_initialized:
             self.last_advance_time = self.get_clock().now()
         self.ruta_completada = False
-        self.pure_rotation_mode = True
         self._check_initial_alignment = True
         self.rot_integral = 0.0
 
@@ -273,9 +296,8 @@ class ControlDiferencial(Node):
         e_y = y_d - y_c
         
         v_dinamica = self.v_max
-        if self.min_dist_frontal > 0.5:
-            factor = min(1.0, (self.min_dist_frontal - 0.5) / 0.5)
-            v_dinamica = self.v_max + factor * (0.7 - self.v_max)
+        # Sin boost en recta: el chassis capa a 0.25 m/s, pedir mas no sirve y desestabiliza SLAM.
+        # (antes subia a 0.7 en linea recta)
             
         dist_to_target = math.hypot(e_x, e_y)
         if dist_to_target > 0:

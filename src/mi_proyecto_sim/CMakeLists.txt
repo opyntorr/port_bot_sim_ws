@@ -15,6 +15,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)   # para leer el YAML de cámara en stitch_pose
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -28,8 +29,15 @@ target_include_directories(planificador_rrt PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(planificador_rrt ${OpenCV_LIBS})
 ament_target_dependencies(planificador_rrt rclcpp nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
 
+# Stitcher por pose en C++ (port de mision/stitch_pose.py — drop-in, mucho más rápido).
+# nlohmann/json es header-only (en /usr/include).
+add_executable(stitch_pose src/stitch_pose.cpp)
+target_include_directories(stitch_pose PRIVATE ${OpenCV_INCLUDE_DIRS} ${YAML_CPP_INCLUDE_DIR})
+target_link_libraries(stitch_pose ${OpenCV_LIBS} yaml-cpp)
+
 install(TARGETS
   planificador_rrt
+  stitch_pose
   DESTINATION lib/${PROJECT_NAME}
 )
 

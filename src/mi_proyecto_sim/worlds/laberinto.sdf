@@ -164,7 +164,7 @@
     <include>
       <name>cubo_meta</name>
       <uri>file://cubo_aruco</uri>
-      <pose>1.2 1.2 0.06 0 0 0</pose>
+      <pose>1.3 1.3 0.06 0 0 0</pose>
     </include>
 
     <include>

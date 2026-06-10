@@ -108,10 +108,10 @@
         </geometry>
       </collision>
 
-      <visual name="visual_obstaculosFix">
+      <visual name="visual_cajasRecientes">
         <geometry>
           <mesh>
-            <uri>model://laberinto_real/meshes/obstaculosFix.stl</uri>
+            <uri>model://laberinto_real/meshes/cajasRecientes.stl</uri>
             <scale>0.001 0.001 0.001</scale>
           </mesh>
         </geometry>
@@ -121,32 +121,10 @@
         </material>
       </visual>
 
-      <collision name="colision_obstaculosFix">
+      <collision name="colision_cajasRecientes">
         <geometry>
           <mesh>
-            <uri>model://laberinto_real/meshes/obstaculosFix.stl</uri>
-            <scale>0.001 0.001 0.001</scale>
-          </mesh>
-        </geometry>
-      </collision>
-
-      <visual name="visual_conos">
-        <geometry>
-          <mesh>
-            <uri>model://laberinto_real/meshes/conos.stl</uri>
-            <scale>0.001 0.001 0.001</scale>
-          </mesh>
-        </geometry>
-        <material>
-          <ambient>1.0 0.45 0.0 1</ambient>
-          <diffuse>1.0 0.45 0.0 1</diffuse>
-        </material>
-      </visual>
-
-      <collision name="colision_conos">
-        <geometry>
-          <mesh>
-            <uri>model://laberinto_real/meshes/conos.stl</uri>
+            <uri>model://laberinto_real/meshes/cajasRecientes.stl</uri>
             <scale>0.001 0.001 0.001</scale>
           </mesh>
         </geometry>

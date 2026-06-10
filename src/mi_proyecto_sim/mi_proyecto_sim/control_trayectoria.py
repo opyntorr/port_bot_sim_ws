@@ -61,7 +61,7 @@ class ControlTrayectoria(Node):
         self._theta_o = None
         
         # Parametros del controlador de Kelly & Diaz (Sintonizados para robustez ante deriva)
-        self.h = 0.25          # Aumentado (antes 0.1) para absorber el ruido y la deriva sin sobreaccionar
+        self.h = 0.30          # punto de control K&D al tamano del JetAuto (era 0.25 del Rosmaster X3): giros mas suaves
         self.k_px = 1.5        # Ganancia proporcional bajada para estabilidad
         self.k_py = 1.5        
         self.v_max = 0.20      # m/s (coherente con cap chassis 0.25; conservador para SLAM)
@@ -73,7 +73,7 @@ class ControlTrayectoria(Node):
 
 
         
-        self.lookahead_dist = 0.12 # Menos atajo en curvas para más precisión
+        self.lookahead_dist = 0.15 # subido de 0.12: reduce serpenteo sin cortar curvas
         
         self.current_target_index = 0
         self.ruta_completada = False
@@ -138,8 +138,8 @@ class ControlTrayectoria(Node):
         self.obstaculo_cerca = False
         self.peligro_frontal = False
         self.min_dist_frontal = 1.5 # Ampliado a 1.5 para poder medir hasta 1.0m
-        self.umbral_frontal = 0.45  # lidar ~0.10 m adelante del centro (JetAuto > RosMaster X3)
-        self.umbral_lateral = 0.40  # la trasera queda a ~0.24 m del lidar -> mas margen no-frontal
+        self.umbral_frontal = 0.40  # lidar ~0.10 m adelante del centro (JetAuto > RosMaster X3)
+        self.umbral_lateral = 0.32  # la trasera queda a ~0.24 m del lidar -> mas margen no-frontal
         
         self.last_log_time = None  # Se inicializa cuando el reloj es válido
 
@@ -341,7 +341,7 @@ class ControlTrayectoria(Node):
                     peligro_frontal = True
                 
                 # Fuerza proporcional a la cercanía
-                fuerza = 10.0 * ((umbral - r) / umbral)**2
+                fuerza = 13.0 * ((umbral - r) / umbral)**2
                 
                 # Componente puramente repulsivo (empuja hacia atrás)
                 rep_x += -fuerza * math.cos(angle)
@@ -682,9 +682,9 @@ class ControlTrayectoria(Node):
             v_ref_y = 0.0
 
         # Velocidades de control en el mundo (u1, u2) (Atracción con prioridad dinámica)
-        # FRENADO PREVENTIVO: Si estamos a menos de 50cm, reducimos k_att gradualmente hasta 0 en los 20cm (punto ciego)
+        # FRENADO PREVENTIVO: Si estamos a menos de 50cm, reducimos k_att gradualmente hasta 0 en ~0.33 m (afuera del self_clearance=0.30, zona ciega real)
         if self.min_dist_frontal < self.umbral_frontal:
-            k_att = (self.min_dist_frontal - 0.20) / (self.umbral_frontal - 0.20)
+            k_att = (self.min_dist_frontal - 0.33) / (self.umbral_frontal - 0.33)
             k_att = max(0.0, min(1.0, k_att))
         else:
             k_att = 1.0
@@ -701,7 +701,7 @@ class ControlTrayectoria(Node):
             # LIMITAR MAGNITUD (Capping): La repulsión no puede ser infinita
             # Reducimos max_rep para evitar que el robot se quede bloqueado en pasillos estrechos
             rep_mag = math.hypot(rep_mundo_x, rep_mundo_y)
-            max_rep = 0.45  # Aumentado para vencer mejor la inercia en esquinas (antes 0.25)
+            max_rep = 0.55  # Aumentado para vencer mejor la inercia en esquinas (antes 0.25)
             if rep_mag > max_rep:
                 rep_mundo_x = (rep_mundo_x / rep_mag) * max_rep
                 rep_mundo_y = (rep_mundo_y / rep_mag) * max_rep

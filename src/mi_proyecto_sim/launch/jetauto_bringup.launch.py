@@ -38,6 +38,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
@@ -54,6 +55,7 @@ def generate_launch_description():
     spawn_y = LaunchConfiguration('y')
     spawn_z = LaunchConfiguration('z')
     spawn_yaw = LaunchConfiguration('yaw')
+    publish_sim_odom = LaunchConfiguration('publish_sim_odom_tf')
 
     args = [
         DeclareLaunchArgument('use_sim_time', default_value='true'),
@@ -61,10 +63,13 @@ def generate_launch_description():
         DeclareLaunchArgument('y', default_value='-1.0'),
         DeclareLaunchArgument('z', default_value='0.08'),
         DeclareLaunchArgument('yaw', default_value='1.5708'),
+        # true (default): la odometria (/odom + TF odom->base_footprint) la da gz nativamente.
+        # false: NO se publica esa odom -> para odometria solo-LiDAR (rf2o provee odom->base).
+        DeclareLaunchArgument('publish_sim_odom_tf', default_value='true'),
     ]
 
-    # --- puente de sensores del robot (nombre propio para no colisionar con el del parent) ---
-    robot_bridge = Node(
+    # --- puente de SENSORES del robot (nombre propio para no colisionar con el del parent) ---
+    sensor_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge',
         name='jetauto_sensor_bridge', output='screen',
         parameters=[{'use_sim_time': use_sim_time}],
@@ -74,8 +79,17 @@ def generate_launch_description():
             '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/cam_1/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
             '/cam_1/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
-            # Odometria NATIVA de gz (plugin OdometryPublisher en jetauto_control.urdf.xacro):
-            # /odom y la TF odom->base_footprint directo del simulador (robusto ante RTF bajo).
+        ],
+    )
+
+    # --- puente de ODOMETRIA NATIVA de gz (plugin OdometryPublisher en jetauto_control.urdf.xacro):
+    #     /odom y la TF odom->base_footprint directo del simulador (robusto ante RTF bajo).
+    #     Condicional: con publish_sim_odom_tf:=false NO arranca -> odom solo-LiDAR (rf2o). ---
+    odom_bridge = Node(
+        package='ros_gz_bridge', executable='parameter_bridge',
+        name='jetauto_odom_bridge', output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+        arguments=[
             '/model/jetauto/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
             '/model/jetauto/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
         ],
@@ -83,6 +97,7 @@ def generate_launch_description():
             ('/model/jetauto/odometry', '/odom'),
             ('/model/jetauto/tf', '/tf'),
         ],
+        condition=IfCondition(publish_sim_odom),
     )
 
     # --- robot_state_publisher (URDF JetAuto sim) ---
@@ -128,4 +143,4 @@ def generate_launch_description():
         RegisterEventHandler(OnProcessExit(target_action=vel_ctrl, on_exit=[chassis_sim])),
     ]
 
-    return LaunchDescription(args + [robot_bridge, rsp, spawn] + seq)
+    return LaunchDescription(args + [sensor_bridge, odom_bridge, rsp, spawn] + seq)

@@ -123,8 +123,16 @@ class GeneradorMapaAruco(Node):
                 # Aplanar y binarizar
                 matriz_homografia = cv2.getPerspectiveTransform(pts_origen, pts_destino)
                 mapa_plano = cv2.warpPerspective(cv_image, matriz_homografia, (width_px, height_px))
+                
+                # Ignorar cinta azul para que no sea obstáculo
+                mapa_hsv = cv2.cvtColor(mapa_plano, cv2.COLOR_BGR2HSV)
+                mask_azul = cv2.inRange(mapa_hsv, (90, 50, 50), (130, 255, 255))
+                
                 mapa_gris = cv2.cvtColor(mapa_plano, cv2.COLOR_BGR2GRAY)
+                mapa_gris[mask_azul > 0] = 255  # Forzar a blanco para que al invertir sea negro (libre)
+                
                 mapa_suavizado = cv2.GaussianBlur(mapa_gris, (5, 5), 0)
+                # Threshold de binarización
                 _, mapa_binario = cv2.threshold(mapa_suavizado, 110, 255, cv2.THRESH_BINARY_INV)
                 
                 # ======================================================

@@ -69,7 +69,8 @@
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0"/>
-        <geometry><mesh filename="${mesh_dir}/back_shell_link.stl"/></geometry>
+        <geometry><mesh filename="${mesh_dir}/back_shell_noant.stl"/></geometry>   <!-- sin antenas -->
+
         <material name="shell_black"><color rgba="0.1 0.1 0.1 1.0"/></material>
       </visual>
     </link>

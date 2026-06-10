@@ -16,6 +16,13 @@ __pycache__/
 # si lo trackearamos aqui git lo meteria como gitlink confuso.
 src/demo_tello_sim/
 
+# rf2o_laser_odometry trae su propio .git (clon de MAPIRlab) — mismo motivo: no trackear aqui.
+src/rf2o_laser_odometry/
+
+# Isaac: artefactos regenerables/temporales (figuras de salida y overlay de ament)
+isaac/figs/
+isaac/.ament_overlay/
+
 # Artefactos varios
 *.bag
 *.swp

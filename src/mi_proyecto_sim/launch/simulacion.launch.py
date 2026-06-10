@@ -114,7 +114,7 @@ def generate_launch_description():
             os.path.join(pkg_sim, 'launch', 'jetauto_bringup.launch.py')
         ),
         launch_arguments={
-            'x': '-1.0', 'y': '-1.0', 'z': '0.08', 'yaw': '1.5708',
+            'x': '-1.3', 'y': '-1.3', 'z': '0.08', 'yaw': '1.5708',
             'use_sim_time': 'true',
         }.items(),
     )

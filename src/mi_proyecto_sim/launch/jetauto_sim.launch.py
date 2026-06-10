@@ -43,6 +43,7 @@ def generate_launch_description():
 
     use_rviz = LaunchConfiguration('use_rviz')
     use_teleop = LaunchConfiguration('use_teleop')
+    use_soporte = LaunchConfiguration('use_soporte')
     spawn_x = LaunchConfiguration('x')
     spawn_y = LaunchConfiguration('y')
     spawn_z = LaunchConfiguration('z')
@@ -51,8 +52,10 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('use_teleop', default_value='true'),
-        DeclareLaunchArgument('x', default_value='-1.0'),
-        DeclareLaunchArgument('y', default_value='-1.0'),
+        DeclareLaunchArgument('use_soporte', default_value='true',
+                              description='true: soporte Legera + ArUco 3D + MS200 (default). false: robot original (A1)'),
+        DeclareLaunchArgument('x', default_value='-1.3'),
+        DeclareLaunchArgument('y', default_value='-1.3'),
         DeclareLaunchArgument('z', default_value='0.08'),
         DeclareLaunchArgument('yaw', default_value='1.5708'),
     ]
@@ -73,6 +76,7 @@ def generate_launch_description():
         arguments=[
             '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
             '/scan@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
+            '/scan_a1@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
             '/imu/data_raw@sensor_msgs/msg/Imu[ignition.msgs.IMU',
             '/cam_1/image@sensor_msgs/msg/Image[ignition.msgs.Image',
             '/cam_1/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo',
@@ -81,7 +85,8 @@ def generate_launch_description():
     )
 
     # --- robot_state_publisher (URDF JetAuto sim) ---
-    robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
+    robot_description = ParameterValue(
+        Command(['xacro ', xacro_file, ' use_soporte:=', use_soporte]), value_type=str)
     rsp = Node(
         package='robot_state_publisher', executable='robot_state_publisher', output='screen',
         parameters=[{'use_sim_time': True, 'robot_description': robot_description}],

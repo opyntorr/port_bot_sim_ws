@@ -80,6 +80,9 @@ class MisionDron(Node):
         self.declare_parameter('camera_topic', '')
         self.declare_parameter('odom_topic', '')
         self.declare_parameter('optitrack_topic', '/optitrack/rigid_body')
+        # Usar la posicion de OptiTrack (odometria fusionada, precisa) en vez de la nominal
+        # del waypoint. Lo activan los launches *_opti. Es la base para un stitching consistente.
+        self.declare_parameter('use_optitrack_pose', False)
         self.declare_parameter('invert_colors', False)
         self.declare_parameter('map_size_m', 3.9)
 
@@ -103,6 +106,7 @@ class MisionDron(Node):
         self.latest_image = None
         self.current_pose = None
         self.optitrack_yaw = None
+        self.use_optitrack_pose = self.get_parameter('use_optitrack_pose').get_parameter_value().bool_value
 
         qos_be = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -237,6 +241,10 @@ class MisionDron(Node):
 
         if self.state == 'INIT':
             if self.latest_image is None or self.current_pose is None:
+                self.get_logger().warn(
+                    f'[DBG INIT] img={self.latest_image is not None} '
+                    f'pose={self.current_pose is not None} now={now:.2f}',
+                    throttle_duration_sec=2.0)
                 return
             self.get_logger().info('Camara y odom OK. Despegando...')
             self._call_action('takeoff')
@@ -459,16 +467,21 @@ class MisionDron(Node):
         path = self.fotos_dir / f'wp_{idx:02d}.png'
         cv2.imwrite(str(path), img)
 
-        # Pose: pose fusionada si está disponible, waypoint nominal como fallback
-        pose_src = 'nominal'
-        ox, oy, oz = WAYPOINTS[idx]
-        oyaw = 0.0
-        if self.current_pose is not None:
+        # Pose: con use_optitrack_pose usamos la posicion de OptiTrack (self.current_pose viene
+        # de la odometria FUSIONADA con OptiTrack: ground-truth de gz en sim / OptiTrack real,
+        # SIN el drift de la odometria normal). Es la base para un stitching consistente.
+        # Sin OptiTrack (o sin pose aun), caemos a la nominal del waypoint.
+        if self.use_optitrack_pose and self.current_pose is not None:
             ox, oy, oz, oyaw = self.current_pose
-            pose_src = 'odometria'
+            pose_src = 'optitrack'
+        else:
+            ox, oy, oz = WAYPOINTS[idx]
+            oyaw = 0.0
+            pose_src = 'nominal'
+        # yaw directo de OptiTrack si llega por /optitrack/rigid_body (real)
         if self.optitrack_yaw is not None:
             oyaw = self.optitrack_yaw
-            pose_src = pose_src + '+optitrack_yaw' if pose_src != 'nominal' else 'optitrack_yaw'
+            pose_src = pose_src + '+optitrack_yaw'
 
         meta = {
             'wp_index': idx,
@@ -498,12 +511,15 @@ class MisionDron(Node):
     def _postprocess(self):
         stitch_out = self.out_dir / 'stitching'
         stitch_out.mkdir(exist_ok=True)
-        cmd = [
-            'python3', '-m', 'mision.stitch_pose',
-            '--input', str(self.fotos_dir),
-            '--output', str(stitch_out),
-            '--map-name', 'occupancy_map',
-        ]
+        # Stitcher en C++ (~2.7x mas rapido). Fallback al Python si el binario no esta.
+        # El binario vive junto a este .py en el install (lib/mi_proyecto_sim/stitch_pose).
+        stitch_bin = Path(__file__).resolve().parent / 'stitch_pose'
+        common = ['--input', str(self.fotos_dir), '--output', str(stitch_out),
+                  '--map-name', 'occupancy_map', '--use-image-yaw', '--skip-refine', '--tape-snap']
+        if stitch_bin.exists():
+            cmd = [str(stitch_bin)] + common            # C++ (phaseCorrelate; usa --sift para SIFT)
+        else:
+            cmd = ['python3', '-m', 'mision.stitch_pose'] + common
         self.get_logger().info(f'Stitching: {" ".join(cmd)} (cwd={STITCH_POSICION_PKG_DIR})')
         result = subprocess.run(
             cmd, capture_output=True, text=True,
@@ -538,9 +554,24 @@ class MisionDron(Node):
         else:
             # Fallback: binarizacion simple si el stitcher no genero PGM
             self.get_logger().warn('No se encontro PGM del stitcher. Binarizando el mosaico...')
+            
+            # Ignorar cintas basadas en el modo (simulacion = azul, real = naranja/azul)
+            hsv_stitched = cv2.cvtColor(stitched, cv2.COLOR_BGR2HSV)
+            if not self.real:
+                # En simulacion: la cinta del suelo es azul. El matiz naranja/marron es de las paredes/cajas y no se debe ignorar!
+                mask_cintas = cv2.inRange(hsv_stitched, (90, 50, 50), (130, 255, 255))
+            else:
+                # En entorno real: la cinta del suelo es naranja.
+                mask_azul = cv2.inRange(hsv_stitched, (90, 50, 50), (130, 255, 255))
+                mask_naranja = cv2.inRange(hsv_stitched, (8, 80, 60), (28, 255, 255))
+                mask_cintas = cv2.bitwise_or(mask_azul, mask_naranja)
+            
             gray = cv2.cvtColor(stitched, cv2.COLOR_BGR2GRAY)
+            gray[mask_cintas > 0] = 255  # Forzar a blanco para que no sea detectado como obstáculo
+            
             covered = gray > 5
             binary = np.full(gray.shape, 205, dtype=np.uint8)
+            # Threshold de binarización
             binary[covered & (gray > 127)] = 254
             binary[covered & (gray <= 127)] = 0
 

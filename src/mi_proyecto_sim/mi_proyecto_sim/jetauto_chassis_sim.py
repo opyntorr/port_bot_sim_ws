@@ -10,9 +10,13 @@ through a ros2_control JointGroupVelocityController; the modeled rollers +
 ground friction then produce the holonomic motion physically.
 
 Signal path kept identical to the real robot:
-  /cmd_vel --(go_factor/turn_factor)--> mecanum inverse kinematics
+  /cmd_vel --(go_factor/turn_factor, clamp velocidad, limite de aceleracion)--> mecanum IK
            --> 4 wheel angular velocities [FL, FR, RL, RR] (rad/s)
            --> /velocity_controller/commands  (Float64MultiArray)
+
+Limites sim-to-real (defaults, aplican a cualquier launch/run): v<=0.20 m/s y w<=0.5 rad/s
+(caps reales del control_diferencial); aceleracion 1.3 m/s^2 lineal y 3.4/4.5 rad/s^2
+angular (accel/decel del EKF real, use_control=true).
 
 Odometry kept identical to the real robot (OPEN-LOOP dead-reckoning of the
 command, NOT wheel encoders): /odom_raw (no TF). robot_localization EKF then
@@ -73,6 +77,18 @@ class JetautoChassisSim(Node):
         self.declare_parameter('cmd_topic', 'cmd_vel')
         self.declare_parameter('wheel_cmd_topic', '/velocity_controller/commands')
 
+        # --- limites de velocidad/aceleracion (envolvente del JetAuto REAL; sim-to-real) ---
+        # Velocidad: caps reales del control_diferencial (0.20 m/s, 0.5 rad/s).
+        # Aceleracion: del EKF real (use_control=true) acceleration_limits/deceleration_limits
+        #   = 1.3 m/s^2 lineal (accel=decel) y 3.4/4.5 rad/s^2 angular (accel/decel).
+        # Defaults aqui => aplican a CUALQUIER launch/run del sim sin pasar params.
+        self.declare_parameter('max_linear_vel', 0.20)     # m/s   (magnitud de vx,vy)
+        self.declare_parameter('max_angular_vel', 0.5)     # rad/s (|wz|)
+        self.declare_parameter('max_linear_accel', 1.3)    # m/s^2
+        self.declare_parameter('max_linear_decel', 1.3)    # m/s^2
+        self.declare_parameter('max_angular_accel', 3.4)   # rad/s^2
+        self.declare_parameter('max_angular_decel', 4.5)   # rad/s^2
+
         gp = self.get_parameter
         a = gp('wheelbase_a').value
         b = gp('wheelbase_b').value
@@ -86,10 +102,19 @@ class JetautoChassisSim(Node):
         self.cmd_timeout = gp('cmd_vel_timeout').value
         self.odom_frame = gp('odom_frame_id').value
         self.base_frame = gp('base_frame_id').value
+        self.max_lin_vel = gp('max_linear_vel').value
+        self.max_ang_vel = gp('max_angular_vel').value
+        self.max_lin_acc = gp('max_linear_accel').value
+        self.max_lin_dec = gp('max_linear_decel').value
+        self.max_ang_acc = gp('max_angular_accel').value
+        self.max_ang_dec = gp('max_angular_decel').value
 
         # --- state ---
         self._lock = threading.Lock()
-        self.cmd_vx = self.cmd_vy = self.cmd_wz = 0.0   # already scaled by go/turn factors
+        # cmd_* = TARGET (escalado por go/turn + recortado al tope de velocidad real);
+        # v*    = comando REAL tras el limitador de aceleracion (mueve ruedas y alimenta odom).
+        self.cmd_vx = self.cmd_vy = self.cmd_wz = 0.0
+        self.vx = self.vy = self.wz = 0.0
         self.x = self.y = self.yaw = 0.0
         self.last_cmd_time = self.get_clock().now()
 
@@ -104,13 +129,23 @@ class JetautoChassisSim(Node):
         self.get_logger().info(
             f'jetauto_chassis_sim listo  (r={self.r:.5f} m, a+b={self.k:.3f} m, '
             f'go={self.go_factor}, turn={self.turn_factor}, {self.rate:.0f} Hz)')
+        self.get_logger().info(
+            f'  limites sim-to-real: v<=({self.max_lin_vel} m/s, {self.max_ang_vel} rad/s), '
+            f'accel lin {self.max_lin_acc}/{self.max_lin_dec}, ang {self.max_ang_acc}/{self.max_ang_dec} m·rad/s^2')
 
     def cmd_vel_cb(self, msg: Twist):
+        # escala como el chasis real (go/turn factor) y recorta al tope de velocidad real.
+        vx = self.go_factor * msg.linear.x
+        vy = self.go_factor * msg.linear.y
+        wz = self.turn_factor * msg.angular.z
+        speed = math.hypot(vx, vy)
+        if speed > self.max_lin_vel and speed > 1e-9:
+            s = self.max_lin_vel / speed
+            vx *= s
+            vy *= s
+        wz = max(-self.max_ang_vel, min(self.max_ang_vel, wz))
         with self._lock:
-            # identical to real chassis_node.cmd_vel_cb
-            self.cmd_vx = self.go_factor * msg.linear.x
-            self.cmd_vy = self.go_factor * msg.linear.y
-            self.cmd_wz = self.turn_factor * msg.angular.z
+            self.cmd_vx, self.cmd_vy, self.cmd_wz = vx, vy, wz   # TARGET (lo alcanza el slew)
             self.last_cmd_time = self.get_clock().now()
 
     def _wheel_velocities(self, vx, vy, wz):
@@ -124,14 +159,37 @@ class JetautoChassisSim(Node):
         rr = (vx - vy + k * wz) / r
         return [fl, fr, rl, rr]
 
+    @staticmethod
+    def _slew(current, target, accel, decel, dt):
+        """Limita la tasa de cambio current->target: usa accel si aumenta la magnitud
+        (misma direccion) y decel si la reduce o invierte. = limitador de aceleracion real."""
+        if abs(target) > abs(current) and target * current >= 0.0:
+            rate = accel
+        else:
+            rate = decel
+        max_step = rate * dt
+        diff = target - current
+        if diff > max_step:
+            return current + max_step
+        if diff < -max_step:
+            return current - max_step
+        return target
+
     def update(self):
         now = self.get_clock().now()
         with self._lock:
             age = (now - self.last_cmd_time).nanoseconds * 1e-9
             if age > self.cmd_timeout:
-                # cmd_vel watchdog (same intent as the real driver's reset)
+                # watchdog: hard-stop como el chasis real (mecanum.reset())
                 self.cmd_vx = self.cmd_vy = self.cmd_wz = 0.0
-            vx, vy, wz = self.cmd_vx, self.cmd_vy, self.cmd_wz
+                self.vx = self.vy = self.wz = 0.0
+            tvx, tvy, twz = self.cmd_vx, self.cmd_vy, self.cmd_wz
+
+        # limitador de aceleracion (slew-rate) hacia el target -> comando real vx,vy,wz
+        self.vx = self._slew(self.vx, tvx, self.max_lin_acc, self.max_lin_dec, self.dt)
+        self.vy = self._slew(self.vy, tvy, self.max_lin_acc, self.max_lin_dec, self.dt)
+        self.wz = self._slew(self.wz, twz, self.max_ang_acc, self.max_ang_dec, self.dt)
+        vx, vy, wz = self.vx, self.vy, self.wz
 
         # 1) drive the wheels (velocity command -> physics via rollers/friction)
         wheels = Float64MultiArray()

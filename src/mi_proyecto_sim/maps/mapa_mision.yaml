@@ -1,7 +1,10 @@
+free_thresh: 0.196
 image: mapa_mision.pgm
 mode: trinary
-resolution: 0.05000000074505806
-origin: [-2.0274326041964366, -2.5751797380692487, 0.0]
 negate: 0
 occupied_thresh: 0.65
-free_thresh: 0.196
+origin:
+- -3.352
+- -3.835
+- 0.0
+resolution: 0.002
