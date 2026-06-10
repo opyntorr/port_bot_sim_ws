@@ -47,11 +47,11 @@ def make_grid(cols, rows):
 
 # Patron serpiente en grid 3x3 (todos a z=2.5m). Spacing 1.3m para ~60% overlap.
 # Cobertura: -1.3m a 1.3m en X e Y.
-_Z = 2.2
+_Z = 2
 WAYPOINTS = []
 GRID_SIZE = 5
-_COLS = make_range_points(GRID_SIZE, -1.6, 1.6)
-_ROWS = list(reversed(make_range_points(GRID_SIZE, -1.3, 1.6)))
+_COLS = make_range_points(GRID_SIZE, -1.4, 1.4)
+_ROWS = list(reversed(make_range_points(GRID_SIZE, -1.2, 1.4)))
 
 for i, y in enumerate(_ROWS):
     row = _COLS if i % 2 == 0 else list(reversed(_COLS))
@@ -66,6 +66,9 @@ ARUCO_META_ID = 5
 POS_TOL = 0.25
 POS_TOL_EXIT = 0.50   # hysteresis: solo reinicia el temporizador si se aleja más de esto
 SETTLE_TIME = 1.5
+TAKEOFF_Z = 0.4       # altura fusionada mínima para considerar el despegue completo
+TAKEOFF_TIMEOUT = 15.0  # s en TAKEOFF sin pasar la compuerta -> abortar y aterrizar
+POSE_STALE_S = 1.0    # edad máxima de /odometry/filtered antes de avisar
 
 def _find_ws_root() -> Path:
     """Devuelve la raíz del workspace: /ros2_ws en Docker, o se deriva del share dir en el host."""
@@ -138,6 +141,8 @@ class MisionDron(Node):
         self.wp_index = 0
         self.settle_start = None
         self.takeoff_t = None
+        self.pose_t = None
+        self.climb_xy = None
         self.land_t = None
         self.land_called = False
 
@@ -165,6 +170,7 @@ class MisionDron(Node):
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         self.current_pose = (p.x, p.y, p.z, yaw)
+        self.pose_t = self._now()
 
     def _now(self):
         return self.get_clock().now().nanoseconds / 1e9
@@ -203,6 +209,14 @@ class MisionDron(Node):
         if now == 0:
             return
 
+        # Pose congelada: el fuser/OptiTrack dejó de publicar — todo el control está ciego
+        if self.pose_t is not None and (now - self.pose_t) > POSE_STALE_S:
+            self.get_logger().error(
+                f'POSE CONGELADA: sin /odometry/filtered hace {now - self.pose_t:.1f} s '
+                '(revisar OptiTrack / pose_fuser)',
+                throttle_duration_sec=2.0,
+            )
+
         if self.state == 'INIT':
             #self._publish_target(0.0, 0.0, _Z)
             if self.latest_image is None or self.current_pose is None:
@@ -214,9 +228,41 @@ class MisionDron(Node):
             return
 
         if self.state == 'TAKEOFF':
-            #self._publish_targetself._publish_target(0.0, 0.0, _Z)
-            if self.current_pose[2] > 0.8 and (now - self.takeoff_t) > 4.0:
-                self.get_logger().info('En aire. Iniciando waypoints...')
+            elapsed = now - self.takeoff_t
+            pose_age = (now - self.pose_t) if self.pose_t is not None else float('inf')
+            if self.current_pose[2] > TAKEOFF_Z and elapsed > 4.0:
+                # Subir vertical en el sitio antes del primer waypoint: un tramo
+                # diagonal largo a baja altura hace que el Tello pierda altitud.
+                self.climb_xy = (self.current_pose[0], self.current_pose[1])
+                self.get_logger().info(
+                    f'En aire. Subiendo a z={_Z} en '
+                    f'({self.climb_xy[0]:+.2f}, {self.climb_xy[1]:+.2f})...'
+                )
+                self.state = 'CLIMB'
+                return
+            self.get_logger().info(
+                f'TAKEOFF: z_fusionada={self.current_pose[2]:.2f} m '
+                f'(umbral {TAKEOFF_Z}) t={elapsed:.1f} s pose_age={pose_age:.2f} s',
+                throttle_duration_sec=1.0,
+            )
+            if elapsed > TAKEOFF_TIMEOUT:
+                self.get_logger().error(
+                    f'TAKEOFF TIMEOUT tras {elapsed:.1f} s: z_fusionada='
+                    f'{self.current_pose[2]:.2f} m nunca superó {TAKEOFF_Z} m '
+                    f'(pose_age={pose_age:.2f} s). Abortando: aterrizaje de seguridad.'
+                )
+                self.state = 'LAND'
+            return
+
+        if self.state == 'CLIMB':
+            cx, cy = self.climb_xy
+            self._publish_target(cx, cy, _Z)
+            self.get_logger().info(
+                f'CLIMB: z={self.current_pose[2]:.2f} m (meta {_Z})',
+                throttle_duration_sec=1.0,
+            )
+            if abs(self.current_pose[2] - _Z) < 0.3:
+                self.get_logger().info('Altura de crucero alcanzada. Iniciando waypoints...')
                 self.state = 'GOTO_WP'
                 self.wp_index = 0
                 self.settle_start = None
