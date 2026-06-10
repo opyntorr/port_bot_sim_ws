@@ -21,9 +21,9 @@ from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from tf2_ros import StaticTransformBroadcaster
 
 try:
@@ -126,11 +126,24 @@ class MisionDron(Node):
         self.target_pub = self.create_publisher(Point, '/drone1/target_position', 10)
         self.static_tf = StaticTransformBroadcaster(self)
 
+        # Estado de vuelo reportado por el driver (solo dron real). En sim no
+        # existe /flight_state: se inicializa en 'flying' para que la compuerta
+        # de TAKEOFF no bloquee nada.
+        self.flight_state = 'unknown' if self.real else 'flying'
+
         # Takeoff/land: servicio TelloAction (sim) o topics Empty (real)
         if self.real:
             self.takeoff_pub = self.create_publisher(Empty, '/takeoff', 1)
             self.land_pub = self.create_publisher(Empty, '/land', 1)
             self.action_cli = None
+            qos_latched = QoSProfile(
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                String, '/flight_state', self._flight_state_cb, qos_latched)
         else:
             self.takeoff_pub = None
             self.land_pub = None
@@ -155,6 +168,11 @@ class MisionDron(Node):
 
     def _image_cb(self, msg):
         self.latest_image = msg
+
+    def _flight_state_cb(self, msg):
+        if msg.data != self.flight_state:
+            self.get_logger().info(f'flight_state del driver: {msg.data}')
+        self.flight_state = msg.data
 
     def _optitrack_cb(self, msg):
         if msg.header.frame_id != 'drone':
@@ -230,7 +248,12 @@ class MisionDron(Node):
         if self.state == 'TAKEOFF':
             elapsed = now - self.takeoff_t
             pose_age = (now - self.pose_t) if self.pose_t is not None else float('inf')
-            if self.current_pose[2] > TAKEOFF_Z and elapsed > 4.0:
+            # Compuerta triple: altura fusionada + tiempo mínimo + confirmación
+            # del driver de que el takeoff terminó. Publicar targets antes de
+            # 'flying' hace que el PID mande rc en pleno takeoff y el firmware
+            # del Tello deja de aceptar comandos.
+            if (self.current_pose[2] > TAKEOFF_Z and elapsed > 4.0
+                    and self.flight_state == 'flying'):
                 # Subir vertical en el sitio antes del primer waypoint: un tramo
                 # diagonal largo a baja altura hace que el Tello pierda altitud.
                 self.climb_xy = (self.current_pose[0], self.current_pose[1])
@@ -242,7 +265,8 @@ class MisionDron(Node):
                 return
             self.get_logger().info(
                 f'TAKEOFF: z_fusionada={self.current_pose[2]:.2f} m '
-                f'(umbral {TAKEOFF_Z}) t={elapsed:.1f} s pose_age={pose_age:.2f} s',
+                f'(umbral {TAKEOFF_Z}) t={elapsed:.1f} s pose_age={pose_age:.2f} s '
+                f'flight_state={self.flight_state}',
                 throttle_duration_sec=1.0,
             )
             if elapsed > TAKEOFF_TIMEOUT:
@@ -307,7 +331,9 @@ class MisionDron(Node):
                 self.land_called = True
                 self.land_t = now
                 return
-            if self.current_pose[2] < 0.2 and (now - self.land_t) > 4.0:
+            landed_by_state = self.real and self.flight_state == 'ground'
+            landed_by_pose = self.current_pose[2] < 0.2 and (now - self.land_t) > 4.0
+            if landed_by_state or landed_by_pose:
                 self.get_logger().info('Aterrizado. Post-procesando...')
                 self.state = 'POSTPROCESS'
             return

@@ -49,6 +49,7 @@ def generate_launch_description():
             ('control', '/control'),
             ('takeoff', '/takeoff'),
             ('land', '/land'),
+            ('flight_state', '/flight_state'),
         ]
     )
 
@@ -76,9 +77,11 @@ def generate_launch_description():
         parameters=[
             {'use_sim_time': False},
             {'velocity_scale': 100.0},
-            {'kp': 0.5},
-            {'ki': 0.06},
+            {'kp': 0.4},
+            {'ki': 0.05},
             {'kd': 0.35},
+            {'use_flight_state': True},
+            {'cmd_pub_rate': 20.0},
         ],
     )
 
