@@ -373,6 +373,7 @@ def blend_and_vote(
     canvas_w: int,
     blend_mode: str = "feather",
     seam_width_px: int = 25,
+    obstacle_height_m: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Render final mosaic + per-class label probabilities.
 
@@ -488,6 +489,19 @@ def blend_and_vote(
         if mm.any():
             om = cv2.bitwise_and(om, cv2.bitwise_not(mm))
             wm = cv2.bitwise_and(wm, cv2.bitwise_not(mm))
+
+        # Ground the obstacle mask: a box of height h seen from altitude z
+        # projects its top face outward from the camera nadir (image centre)
+        # by z/(z-h).  Shrinking the mask radially by (z-h)/z maps the
+        # top/side-face projection back onto the floor footprint, removing
+        # the parallax "splay" that makes tall obstacles look oversized.
+        if obstacle_height_m > 0.0 and om.any():
+            s = max(tile.z - obstacle_height_m, 1e-3) / max(tile.z, 1e-3)
+            M = np.float32([
+                [s, 0, (1.0 - s) * new_w / 2.0],
+                [0, s, (1.0 - s) * new_h / 2.0],
+            ])
+            om = cv2.warpAffine(om, M, (new_w, new_h), flags=cv2.INTER_NEAREST)
 
         feather = _radial_feather(new_h, new_w) * (vm.astype(np.float32) / 255.0)
 
@@ -714,6 +728,15 @@ def build_final_label(
     lab_mosaic = cv2.cvtColor(mosaic, cv2.COLOR_BGR2LAB)
     om = (lab_mosaic[:, :, 2].astype(np.int16) < 110).astype(np.uint8) * 255
     om[~interior_mask] = 0
+
+    # Parallax gate: a floor pixel truly under a box is occluded (sees blue)
+    # from EVERY camera position, while the sideways "splay" of tall box faces
+    # is blue only from cameras on one side.  Requiring a minimum fraction of
+    # covering tiles to vote obstacle trims the splay down to the footprint.
+    if occ_count is not None and coverage_count is not None and occ_min_frac > 0:
+        vote_frac = occ_count / np.maximum(coverage_count, 1.0)
+        om[vote_frac < occ_min_frac] = 0
+
     if occ_close_px > 0:
         kc = np.ones((occ_close_px * 2 + 1, occ_close_px * 2 + 1), np.uint8)
         om = cv2.morphologyEx(om, cv2.MORPH_CLOSE, kc)
@@ -735,8 +758,9 @@ def build_final_label(
         if area < 400:
             continue
         if area > MAX_BOX_AREA:
-            # Large blob → keep convex hull, no geometric fitting
-            cv2.fillPoly(occ_shapes, [cv2.convexHull(cnt)], 255)
+            # Large blob (box row): median-width rectangle along the principal
+            # axis — robust against one-sided parallax wedge at arena edges.
+            cv2.fillPoly(occ_shapes, [_median_width_rect(cnt, om.shape)], 255)
             continue
         perim = cv2.arcLength(cnt, True)
         circularity = (4 * np.pi * area / (perim * perim)) if perim > 0 else 0
@@ -752,8 +776,10 @@ def build_final_label(
                 continue
         cv2.fillPoly(occ_shapes, [cv2.convexHull(cnt)], 255)
 
-    # Do not overwrite tape grid labels with obstacle
-    label_out[(occ_shapes > 0) & (label_out != L_GRID)] = L_OCCUPIED
+    # Occupied wins over everything inside a fitted shape — tape-grid pixels
+    # seen through/behind a box (parallax) must not punch free slits into the
+    # obstacle on the AMR map.
+    label_out[occ_shapes > 0] = L_OCCUPIED
 
     # ── Wall (white netting, boundary zone only) ────────────────────────────
     hull_u8 = interior_mask.astype(np.uint8) * 255
@@ -773,6 +799,50 @@ def build_final_label(
             label_out[lbls_w == k] = L_WALL
 
     return label_out
+
+
+def _median_width_rect(cnt: np.ndarray, shape_hw: Tuple[int, int]) -> np.ndarray:
+    """Fit a rectangle of median width along the blob's principal axis.
+
+    Robust against one-sided parallax splay: a tall box row seen only from one
+    side grows a wedge toward the unseen side; the median cross-width along the
+    spine ignores the bulge.  Returns the 4 corner points (int32, 4x2).
+    """
+    mask = np.zeros(shape_hw, dtype=np.uint8)
+    cv2.drawContours(mask, [cnt], -1, 255, -1)
+    ys, xs = np.nonzero(mask)
+    pts = np.column_stack([xs, ys]).astype(np.float64)
+    mean = pts.mean(axis=0)
+    centered = pts - mean
+    cov = np.cov(centered.T)
+    evals, evecs = np.linalg.eigh(cov)
+    axis = evecs[:, np.argmax(evals)]          # principal (long) direction
+    perp = np.array([-axis[1], axis[0]])
+
+    t = centered @ axis                         # position along the spine
+    s = centered @ perp                         # offset across the spine
+    nbins = max(8, int((t.max() - t.min()) / 20))
+    bins = np.linspace(t.min(), t.max(), nbins + 1)
+    widths, centers = [], []
+    for b0, b1 in zip(bins[:-1], bins[1:]):
+        sel = (t >= b0) & (t < b1)
+        if sel.sum() < 10:
+            continue
+        s_sel = s[sel]
+        lo, hi = np.percentile(s_sel, [5, 95])
+        widths.append(hi - lo)
+        centers.append((lo + hi) / 2.0)
+    half_w = float(np.median(widths)) / 2.0
+    s_mid = float(np.median(centers))
+
+    t0, t1 = float(t.min()), float(t.max())
+    corners = [
+        mean + t0 * axis + (s_mid - half_w) * perp,
+        mean + t1 * axis + (s_mid - half_w) * perp,
+        mean + t1 * axis + (s_mid + half_w) * perp,
+        mean + t0 * axis + (s_mid + half_w) * perp,
+    ]
+    return np.array(corners, dtype=np.int32)
 
 
 def crop_to_arena(

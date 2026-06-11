@@ -39,6 +39,23 @@ def _strict_detector() -> cv2.aruco.ArucoDetector:
     return p
 
 
+def _relaxed_detector() -> cv2.aruco.ArucoDetector:
+    """Relaxed quad-extraction params for the 2x-upscale fallback pass.
+
+    Only the contour-acceptance stage is relaxed; the code-decoding stage keeps
+    OpenCV defaults (normal error correction), so any returned ID is still
+    dictionary-validated.  Combined with the _MIN_MARKER_PX size gate and the
+    cross-tile median, false positives stay negligible while small/soft markers
+    that the strict pass drops become detectable.
+    """
+    p = _strict_detector()
+    p.minMarkerPerimeterRate = 0.01
+    p.polygonalApproxAccuracyRate = 0.1
+    p.adaptiveThreshWinSizeMax = 53
+    p.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    return p
+
+
 @dataclass
 class ArUcoSighting:
     marker_id: int
@@ -48,6 +65,7 @@ class ArUcoSighting:
     world_x: float
     world_y: float
     pixel_size: float
+    canvas_size: float
     dict_name: str
 
 
@@ -58,6 +76,7 @@ class ArUcoMarker:
     world_y: float
     canvas_x: float
     canvas_y: float
+    canvas_size: float
     n_detections: int
     tiles_seen: List[int] = field(default_factory=list)
 
@@ -82,36 +101,58 @@ def detect_in_tile(
     )
     cos_a, sin_a = math.cos(alpha_rad), math.sin(alpha_rad)
 
-    strict_params = _strict_detector()
     sightings: List[ArUcoSighting] = []
     seen_ids: set = set()
 
+    # Three passes: strict params on the original image, relaxed params on a
+    # 2x upscale (rescues small/soft markers the strict pass drops), and strict
+    # params on an adaptively-binarized 2x upscale (re-hardens cell edges that
+    # motion blur smeared into mid-gray — rescues blurred markers the decoder
+    # otherwise cannot read). All validated on the rico dataset with zero false
+    # positives; every pass keeps normal dictionary error correction.
+    img_2x = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    gray_2x = cv2.cvtColor(img_2x, cv2.COLOR_BGR2GRAY)
+    binar_2x = cv2.cvtColor(
+        cv2.adaptiveThreshold(gray_2x, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                              cv2.THRESH_BINARY, 61, 5),
+        cv2.COLOR_GRAY2BGR,
+    )
+    passes = [
+        (img, 1.0, _strict_detector()),
+        (img_2x, 2.0, _relaxed_detector()),
+        (binar_2x, 2.0, _strict_detector()),
+    ]
+
     for dict_name, dict_id in _DICTS_TO_TRY:
         aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
-        detector = cv2.aruco.ArucoDetector(aruco_dict, strict_params)
-        corners_list, ids, _ = detector.detectMarkers(img)
-
-        if ids is None:
-            continue
-
-        for marker_id, corners in zip(ids.flatten(), corners_list):
-            if int(marker_id) in seen_ids:
+        detections: List[Tuple[int, float, float, float]] = []
+        for det_img, scale, params in passes:
+            detector = cv2.aruco.ArucoDetector(aruco_dict, params)
+            corners_list, ids, _ = detector.detectMarkers(det_img)
+            if ids is None:
                 continue
+            for marker_id, corners in zip(ids.flatten(), corners_list):
+                center = corners[0].mean(axis=0)
+                sides = [
+                    np.linalg.norm(corners[0][i] - corners[0][(i + 1) % 4])
+                    for i in range(4)
+                ]
+                detections.append((
+                    int(marker_id),
+                    float(center[0]) / scale,
+                    float(center[1]) / scale,
+                    float(np.mean(sides)) / scale,
+                ))
 
-            center = corners[0].mean(axis=0)
-            px, py = float(center[0]), float(center[1])
-
-            sides = [
-                np.linalg.norm(corners[0][i] - corners[0][(i + 1) % 4])
-                for i in range(4)
-            ]
-            pixel_size = float(np.mean(sides))
+        for marker_id, px, py, pixel_size in detections:
+            if marker_id in seen_ids:
+                continue
 
             # Reject detections that are too small to be real floor markers.
             if pixel_size < _MIN_MARKER_PX:
                 continue
 
-            seen_ids.add(int(marker_id))
+            seen_ids.add(marker_id)
 
             # Offset from image center → resized image pixels
             dx_res = (px - img_w / 2.0) * fp / img_h
@@ -128,13 +169,14 @@ def detect_in_tile(
             world_y = spec.extent.y_min + (canvas_y - spec.cfg.margin_px) / spec.cfg.ppm
 
             sightings.append(ArUcoSighting(
-                marker_id=int(marker_id),
+                marker_id=marker_id,
                 tile_idx=tile.idx,
                 canvas_x=canvas_x,
                 canvas_y=canvas_y,
                 world_x=world_x,
                 world_y=world_y,
                 pixel_size=pixel_size,
+                canvas_size=pixel_size * fp / img_h,
                 dict_name=dict_name,
             ))
 
@@ -175,6 +217,7 @@ def locate_aruco_markers(
             world_y=world_y,
             canvas_x=canvas_x,
             canvas_y=canvas_y,
+            canvas_size=float(np.median([s.canvas_size for s in sightings])),
             n_detections=len(sightings),
             tiles_seen=sorted({s.tile_idx for s in sightings}),
         ))

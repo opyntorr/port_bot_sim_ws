@@ -24,7 +24,11 @@ from .place_pose import (
 from .preprocess import clahe_lab, edge_image, grid_mask, estimate_tile_yaw
 from .refine_window import refine_all, RefineConfig
 from .solve_global import solve_positions, apply_positions, summarize_residuals
-from .blend_vote import blend_and_vote, label_to_ros_pgm, label_to_grid_vis, write_ros_map, mask_exterior, build_final_label, crop_to_arena
+from .blend_vote import (
+    blend_and_vote, label_to_ros_pgm, label_to_grid_vis, write_ros_map,
+    mask_exterior, build_final_label, crop_to_arena,
+    L_UNKNOWN, L_OCCUPIED, L_FREE, L_WALL,
+)
 from .tape_snap import snap_to_tape_grid
 
 
@@ -104,6 +108,18 @@ def main():
                     help="Fixed arena canvas size in metres (e.g. 3.9 for a 3.9×3.9 m arena). "
                          "Crops/pads the final map and mosaic to a square of this size, "
                          "centred on the tape-grid centroid. Omit to keep the full canvas.")
+    ap.add_argument("--obstacle-height-m", type=float, default=0.0,
+                    help="Physical height of box obstacles in metres (e.g. 0.3). "
+                         "When set, each tile's obstacle mask is shrunk radially "
+                         "about the camera nadir by (z-h)/z, collapsing the "
+                         "parallax splay of tall boxes onto their floor footprint. "
+                         "Combine with --occ-min-frac ~0.4 so only pixels seen as "
+                         "obstacle from most viewpoints stay occupied.")
+    ap.add_argument("--border-occupied", action="store_true",
+                    help="Relabel every unknown cell (outside the arena tape-grid hull "
+                         "and any crop padding) as occupied. With --arena-size-m this "
+                         "yields a fully-binary square map: white free interior, solid "
+                         "black border — no gray unknown for the AMR to misread.")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--map-name", default="occupancy_map")
     args = ap.parse_args()
@@ -152,6 +168,10 @@ def main():
         for t, bgr in zip(tiles, bgrs):
             orig = t.yaw_deg
             detected = estimate_tile_yaw(bgr)
+            if detected is None:
+                # CLAHE can shift dark-frame tape colours out of the HSV range;
+                # retry on the raw tile before falling back to OptiTrack yaw.
+                detected = estimate_tile_yaw(t.img)
             if detected is not None:
                 t.yaw_deg = detected
                 n_detected += 1
@@ -229,6 +249,7 @@ def main():
     mosaic, label, seam_vis, prob_stack, occ_count, coverage_count = blend_and_vote(
         tiles, placed, cfg, spec.height, spec.width,
         blend_mode=args.blend_mode, seam_width_px=args.seam_width,
+        obstacle_height_m=args.obstacle_height_m,
     )
     label, mosaic, interior_mask = mask_exterior(label, mosaic)
     n_interior = int(interior_mask.sum())
@@ -246,6 +267,37 @@ def main():
                               occ_close_px=args.occ_close_px)
     print("[stitch_pose] build_final_label: occupancy map rebuilt from mosaic colour")
 
+    # ArUco localization (before map export so detected markers can be removed
+    # from the occupied labels).  Markers are navigation landmarks, not
+    # obstacles: delete any occupied/wall blob that contains a detected marker
+    # (e.g. the marker cube itself).  A size cap prevents a marker lying on a
+    # genuinely large obstacle (box row) from deleting it.
+    from .aruco_locate import locate_aruco_markers, draw_aruco_overlay
+    import json as _json
+
+    aruco_markers = locate_aruco_markers(tiles, placed, spec, debug=args.debug)
+    if aruco_markers:
+        obst = ((label == L_OCCUPIED) | (label == L_WALL)).astype(np.uint8)
+        _, comp_lbls = cv2.connectedComponents(obst, connectivity=8)
+        for m in aruco_markers:
+            mx, my = int(round(m.canvas_x)), int(round(m.canvas_y))
+            r = max(3, int(round(m.canvas_size)))
+            y0, y1 = max(0, my - r), min(label.shape[0], my + r + 1)
+            x0, x1 = max(0, mx - r), min(label.shape[1], mx + r + 1)
+            max_blob = 12.0 * m.canvas_size ** 2
+            for cid in np.unique(comp_lbls[y0:y1, x0:x1]):
+                if cid == 0:
+                    continue
+                comp = comp_lbls == cid
+                n = int(comp.sum())
+                if n <= max_blob:
+                    label[comp] = L_FREE
+                    print(f"  [aruco] id{m.id}: removed obstacle blob of {n} px "
+                          f"containing the marker (landmark, not obstacle)")
+                else:
+                    print(f"  [aruco] id{m.id}: kept blob of {n} px under marker "
+                          f"(exceeds {max_blob:.0f} px cap — looks like a real obstacle)")
+
     # Optional: crop both mosaic and label to a fixed arena square.
     crop_offset = (0, 0)
     if args.arena_size_m is not None:
@@ -253,6 +305,19 @@ def main():
         arena_px = int(round(args.arena_size_m * cfg.ppm))
         print(f"[stitch_pose] crop_to_arena: {arena_px}×{arena_px} px "
               f"({args.arena_size_m}m × {args.arena_size_m}m)")
+
+    if args.border_occupied:
+        n_border = int((label == L_UNKNOWN).sum())
+        label[label == L_UNKNOWN] = L_OCCUPIED
+        # Force a thin occupied perimeter ring so the map is always closed even
+        # where the tape hull pokes past the crop window.
+        ring = 5
+        label[:ring, :] = L_OCCUPIED
+        label[-ring:, :] = L_OCCUPIED
+        label[:, :ring] = L_OCCUPIED
+        label[:, -ring:] = L_OCCUPIED
+        print(f"[stitch_pose] --border-occupied: {n_border} unknown px relabeled occupied "
+              f"+ {ring}px perimeter ring")
 
     if args.debug:
         canvas_a, _ = paste_phase_a(spec, placed)
@@ -299,11 +364,7 @@ def main():
         grid_layer = (prob_stack[3] * 255).clip(0, 255).astype(np.uint8)
         cv2.imwrite(str(out / "landmark_grid.png"), grid_layer)
 
-    # 8) ArUco localization.
-    from .aruco_locate import locate_aruco_markers, draw_aruco_overlay
-    import json as _json
-
-    aruco_markers = locate_aruco_markers(tiles, placed, spec, debug=args.debug)
+    # 8) ArUco outputs (markers were detected before map export, see above).
     if aruco_markers:
         aruco_data = {
             "ppm": cfg.ppm,
