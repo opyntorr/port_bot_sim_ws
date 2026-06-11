@@ -51,7 +51,7 @@ _Z = 2
 WAYPOINTS = []
 GRID_SIZE = 5
 _COLS = make_range_points(GRID_SIZE, -1.4, 1.4)
-_ROWS = list(reversed(make_range_points(GRID_SIZE, -1.2, 1.4)))
+_ROWS = list(reversed(make_range_points(GRID_SIZE, -1.3, 1.4)))
 
 for i, y in enumerate(_ROWS):
     row = _COLS if i % 2 == 0 else list(reversed(_COLS))
@@ -70,6 +70,13 @@ TAKEOFF_Z = 0.4       # altura fusionada mínima para considerar el despegue com
 TAKEOFF_TIMEOUT = 20.0  # s en TAKEOFF sin pasar la compuerta -> abortar y aterrizar
                         # (> 10 s de timeout djitellopy + 0.5 s veredicto TOF + 1 s gracia)
 POSE_STALE_S = 1.0    # edad máxima de /odometry/filtered antes de avisar
+
+# --- Gate 1: calidad de foto ---
+PHOTO_MAX_RETRIES   = 3      # reintentos tras el primer intento fallido
+PHOTO_RETRY_DELAY   = 0.4    # s entre intentos (frame fresco)
+BLUR_THRESH         = 60.0   # varianza Laplaciana mínima (nitidez)
+ARTIFACT_THRESH     = 2.0    # ratio bordes-de-bloque 8px / gradiente medio (solo real)
+STATIC_PIXEL_THRESH = 3.0    # diff media vs frame anterior; menor = stream congelado (solo real)
 
 def _find_ws_root() -> Path:
     """Devuelve la raíz del workspace: /ros2_ws en Docker, o se deriva del share dir en el host."""
@@ -95,7 +102,17 @@ class MisionDron(Node):
         self.declare_parameter('odom_topic', '')
         self.declare_parameter('optitrack_topic', '/optitrack/rigid_body')
 
+        # Gate 1: umbrales ajustables por escena/cámara sin tocar código.
+        # OJO: en fotos reales Tello 960x720 a 2-2.5m la lap_var típica es 5-30;
+        # blur_thresh=60 (probado en stream 1280x720) las rechazaría todas.
+        self.declare_parameter('blur_thresh', BLUR_THRESH)
+        self.declare_parameter('artifact_thresh', ARTIFACT_THRESH)
+        self.declare_parameter('static_pixel_thresh', STATIC_PIXEL_THRESH)
+
         self.real = self.get_parameter('use_real_drone').get_parameter_value().bool_value
+        self.blur_thresh = self.get_parameter('blur_thresh').get_parameter_value().double_value
+        self.artifact_thresh = self.get_parameter('artifact_thresh').get_parameter_value().double_value
+        self.static_pixel_thresh = self.get_parameter('static_pixel_thresh').get_parameter_value().double_value
 
         # Tópicos: parámetro explícito > default según modo
         cam_topic = self.get_parameter('camera_topic').get_parameter_value().string_value
@@ -159,6 +176,11 @@ class MisionDron(Node):
         self.climb_xy = None
         self.land_t = None
         self.land_called = False
+
+        # Gate 1: calidad de foto
+        self.photo_attempts = 0
+        self.photo_best = None      # (n_fallos, lap_var, img, quality) del mejor intento rechazado
+        self._prev_gate_gray = None # gris del último frame analizado (detección de stream congelado)
 
         self.timer = self.create_timer(0.1, self._tick)
         modo = 'REAL' if self.real else 'SIM'
@@ -306,8 +328,11 @@ class MisionDron(Node):
                         f'Esperando {SETTLE_TIME}s de estabilidad...'
                     )
                 elif (now - self.settle_start) > SETTLE_TIME:
-                    self._save_photo(self.wp_index)
+                    if not self._attempt_photo(now):
+                        return
                     self.settle_start = None
+                    self.photo_attempts = 0
+                    self.photo_best = None
                     self.wp_index += 1
                     if self.wp_index >= len(WAYPOINTS):
                         self.get_logger().info('Todos los waypoints completados.')
@@ -348,10 +373,10 @@ class MisionDron(Node):
                 self.get_logger().error(f'Post-proceso fallo: {exc}')
             self.state = 'DONE'
 
-    def _save_photo(self, idx):
+    def _grab_frame(self, idx):
         if self.latest_image is None:
             self.get_logger().warn(f'[WP{idx}] Sin imagen disponible — foto no guardada')
-            return
+            return None
 
         # Decodificar imagen (evita cv_bridge para compatibilidad con NumPy 2.x)
         try:
@@ -363,8 +388,88 @@ class MisionDron(Node):
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         except Exception as exc:
             self.get_logger().error(f'[WP{idx}] Error decodificando imagen: {exc}')
-            return
+            return None
+        return img
 
+    def _check_photo_quality(self, img):
+        """Gate 1: blur (siempre), artefactos de códec y frame congelado (solo real)."""
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        reasons = []
+
+        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        if lap_var < self.blur_thresh:
+            reasons.append(f'blur (lap_var={lap_var:.1f} < {self.blur_thresh})')
+
+        blockiness = None
+        static_diff = None
+        if self.real:
+            # Artefactos H.264: gradiente en fronteras de bloque 8px vs gradiente medio
+            g = gray.astype(np.float32)
+            col_diff = np.abs(np.diff(g, axis=1))
+            row_diff = np.abs(np.diff(g, axis=0))
+            eps = 1e-3
+            ratio_c = float(col_diff[:, 7::8].mean() / max(col_diff.mean(), eps))
+            ratio_r = float(row_diff[7::8, :].mean() / max(row_diff.mean(), eps))
+            blockiness = max(ratio_c, ratio_r)
+            if blockiness > self.artifact_thresh:
+                reasons.append(f'artefactos (block={blockiness:.2f} > {self.artifact_thresh})')
+
+            # Stream congelado: el dron se movió, el frame debería cambiar
+            if self._prev_gate_gray is not None and self._prev_gate_gray.shape == gray.shape:
+                static_diff = float(np.abs(
+                    gray.astype(np.int16) - self._prev_gate_gray.astype(np.int16)).mean())
+                if static_diff < self.static_pixel_thresh:
+                    reasons.append(f'congelado (diff={static_diff:.2f} < {self.static_pixel_thresh})')
+            self._prev_gate_gray = gray
+
+        return {
+            'passed': not reasons,
+            'reasons': reasons,
+            'lap_var': lap_var,
+            'blockiness': blockiness,
+            'static_diff': static_diff,
+        }
+
+    def _attempt_photo(self, now):
+        """Captura un frame y aplica Gate 1. Devuelve True si se guardó foto
+        (buena o mejor-intento agotados los reintentos) y se puede avanzar de WP;
+        False si hay que reintentar en el mismo WP."""
+        idx = self.wp_index
+        img = self._grab_frame(idx)
+        if img is None:
+            # Sin cámara: comportamiento previo, avanzar sin foto
+            return True
+
+        q = self._check_photo_quality(img)
+        if q['passed']:
+            self._save_photo(idx, img, q)
+            return True
+
+        # Rechazada: conservar el mejor intento (menos fallos, luego mayor nitidez)
+        cand = (len(q['reasons']), -q['lap_var'])
+        if self.photo_best is None or cand < (len(self.photo_best[3]['reasons']),
+                                              -self.photo_best[3]['lap_var']):
+            self.photo_best = (cand[0], q['lap_var'], img, q)
+
+        self.photo_attempts += 1
+        if self.photo_attempts > PHOTO_MAX_RETRIES:
+            _, _, best_img, best_q = self.photo_best
+            self.get_logger().warn(
+                f'[WP{idx}] Gate 1 falló {self.photo_attempts}x; '
+                f'guardando mejor intento ({", ".join(best_q["reasons"])})'
+            )
+            self._save_photo(idx, best_img, best_q)
+            return True
+
+        self.get_logger().warn(
+            f'[WP{idx}] Foto rechazada ({", ".join(q["reasons"])}); '
+            f'reintento {self.photo_attempts}/{PHOTO_MAX_RETRIES}'
+        )
+        # Próximo intento dentro de PHOTO_RETRY_DELAY s, reutilizando settle_start
+        self.settle_start = now - SETTLE_TIME + PHOTO_RETRY_DELAY
+        return False
+
+    def _save_photo(self, idx, img, quality):
         h, w = img.shape[:2]
         self.get_logger().info(f'[WP{idx}] Imagen capturada: {w}x{h} px')
 
@@ -393,6 +498,16 @@ class MisionDron(Node):
             'stamp':    datetime.now().strftime('%Y%m%d_%H%M%S'),
             'img_w':    w,
             'img_h':    h,
+            'quality': {
+                'passed':      quality['passed'],
+                'attempts':    self.photo_attempts + (1 if quality['passed'] else 0),
+                'lap_var':     round(quality['lap_var'], 1),
+                'blockiness':  round(quality['blockiness'], 3)
+                               if quality['blockiness'] is not None else None,
+                'static_diff': round(quality['static_diff'], 2)
+                               if quality['static_diff'] is not None else None,
+                'reasons':     quality['reasons'],
+            },
         }
 
         # Guardar JSON de metadatos
