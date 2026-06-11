@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CycloneDDS para el docker del sim/misión — AISLAMIENTO DEL ROBOT por interfaz.
+
+  Con network_mode:host el contenedor ve todas las interfaces del laptop. Aquí lo
+  limitamos a 'wlo1' (LAN, donde está el cliente OptiTrack) + 'lo' (host-local), y
+  EXCLUIMOS 'wlx00e04c49ace0' (la wifi 10.42.1.x que llega al JetAuto real).
+
+  Resultado: el DDS del sim puede hablar con OptiTrack pero NO puede alcanzar al robot,
+  aunque el ROS_DOMAIN_ID quedara mal puesto. Defensa en profundidad sobre el dominio 30.
+
+  Revertir = quitar CYCLONEDDS_URI/volumen del compose (vuelve a multicast por defecto).
+  Si OptiTrack vive en otra interfaz, cambia 'wlo1' por la correcta.
+-->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="wlo1" priority="default" multicast="default"/>
+        <NetworkInterface name="lo" priority="default" multicast="true"/>
+      </Interfaces>
+      <AllowMulticast>default</AllowMulticast>
+    </General>
+  </Domain>
+</CycloneDDS>

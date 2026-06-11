@@ -9,10 +9,25 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - NVIDIA_DRIVER_CAPABILITIES=all
+      # --- DDS: alinear con el cliente OptiTrack del host ---
+      # CycloneDDS + dominio 30 (igual que el host). Multicast por defecto (sin CYCLONEDDS_URI):
+      # descubre al cliente OptiTrack del host por multicast (mismo dominio e interfaz,
+      # gracias a network_mode host). Verificado bidireccional 2/2 con PoseStamped best_effort.
+      # El dominio 30 ya aísla del JetAuto real (que vive en dominio 0); no hace falta forzar lo.
+      # NOTA: si el descubrimiento falla, casi siempre es un daemon ros2 colgado en el host
+      #       ocupando el puerto 14900 -> matarlo (ver README/notas) y reintentar.
+      - ROS_DOMAIN_ID=30
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      # --- AISLAMIENTO DURO del robot real (defensa en profundidad sobre el dominio 30) ---
+      # Limita el DDS a wlo1 (LAN/OptiTrack) + lo, y EXCLUYE wlx (la wifi 10.42.x del robot):
+      # el sim NO puede alcanzar al JetAuto aunque el dominio quedara mal. Ver el XML.
+      # Revertir = comentar esta linea y el volumen de abajo (vuelve a multicast por defecto).
+      - CYCLONEDDS_URI=file:///cyclonedds-sim-isolated.xml
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./src:/ros2_ws/src:rw
       - /dev/input:/dev/input:ro
+      - ./cyclonedds-sim-isolated.xml:/cyclonedds-sim-isolated.xml:ro
     deploy:
       resources:
         reservations:
