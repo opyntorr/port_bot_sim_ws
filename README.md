@@ -46,39 +46,25 @@ The platform integrates:
 The cooperative multi-robot pipeline bridges aerial exploration, global map synthesis, dynamic spatial handoff, and ground autonomous navigation:
 
 ```mermaid
-flowchart TD
-    subgraph Aerial_Subsystem["Aerial Subsystem (DJI Tello UAV)"]
-        A1["Autonomous Lawnmower Flight Sweep"] --> A2["Nadir Image Capture (16 Tiles)"]
-        A2 --> A3["3-Phase Orthomosaic Stitching\n(Pose + FFT Phase Correlation + L-BFGS)"]
-        A3 --> A4["ROS 2 Occupancy Grid Generation\n(500 px/m, 96.8% Arena Match)"]
-        A3 --> A5["Sub-pixel ArUco Marker Detection\n(Robot ID 4, Destination ID 0)"]
+flowchart LR
+    subgraph Aerial["Aerial Subsystem (DJI Tello)"]
+        UAV["Lawnmower Survey"] --> Stitch["3-Phase Stitching\n& ArUco Detection"]
     end
 
-    subgraph Coordination["Cooperative Handoff & Spatial Alignment"]
-        A4 --> C1["Static Map Server & Costmap Ingestion"]
-        A5 --> C2["Dynamic TF Broadcaster (publicador_tfs_arucos)\nBroadcasts: map -> map_dron_origin -> meta_aruco"]
-        C2 --> C3["Latch Event: /alignment_ready"]
+    subgraph Coordination["Cooperative Bridge"]
+        Stitch --> TF["Dynamic TF Broadcaster\nmap to meta_aruco"]
+        Stitch --> Map["Occupancy Map\n(500 px/m)"]
     end
 
-    subgraph Ground_Subsystem["Ground Subsystem (Hiwonder JetAuto AMR)"]
-        C1 --> G1["Global Path Planner (Theta* / RRT)"]
-        C3 --> G1
-        G1 --> G2["Carrot-Following Controller (Kelly & Diaz)"]
-        
-        subgraph Sensor_Fusion["From-Scratch Continuous-Discrete Kalman Filter"]
-            SF1["Wheel Encoders (4WD Mecanum)"] --> SF_KF["Kalman-Bucy Filter\nAugmented State: [x, y, theta, b_omega]"]
-            SF2["MPU-6050 IMU (Gyroscope & Accelerometer)"] --> SF_KF
-            SF3["Absolute Global Pose\n(OptiTrack NatNet / AMCL / ArUco)"] --> SF_KF
-            SF_KF --> G2
-        end
-
-        subgraph Safety_Layer["LiDAR Active Safety Layer"]
-            L1["Oradar MS200 2D LiDAR (190 deg FOV)"] --> L2["3-Cone Artificial Potential Field\nFront Cone: 35 cm (Proportional Braking)\nSide Cones: 25 cm (Explosive Repulsion)"]
-            L2 --> G2
-        end
-
-        G2 --> G3["Mecanum Kinematic Inverse Model\nFour Independent Motor Velocities"]
-        G3 --> G4["Physical Actuation (/cmd_vel)"]
+    subgraph Ground["Ground Subsystem (JetAuto AMR)"]
+        TF --> Plan["Theta* / RRT Planner"]
+        Map --> Plan
+        Plan --> Ctrl["Kelly & Diaz Controller"]
+        Sensors["Encoders + IMU\n+ Global Pose"] --> KF["Manual Kalman Filter\n(b_omega estimation)"]
+        KF --> Ctrl
+        LiDAR["MS200 LiDAR"] --> Safe["3-Cone Safety Repulsion"]
+        Safe --> Ctrl
+        Ctrl --> Act["Mecanum Drive (/cmd_vel)"]
     end
 ```
 
@@ -88,34 +74,14 @@ To guarantee low latency, robust real-time motor control, and computational powe
 
 ```mermaid
 flowchart LR
-    subgraph Slave_Node["Jetson Nano (Slave Node - Docker Container)"]
-        direction TB
-        N1["I2C Bus 0x34: 4WD Mecanum Motor Driver"]
-        N2["MPU-6050 6-DOF IMU (Raw Readings)"]
-        N3["Oradar MS200 2D LiDAR Driver"]
-        N4["Orbbec Astra RGB-D Sensor Node"]
-    end
+    Nano["Jetson Nano (Slave - Docker)\n• I2C Motor Driver (0x34)\n• MPU-6050 IMU\n• MS200 LiDAR & Astra Camera"]
+    Transport["CycloneDDS Unicast + Chrony\n(Gigabit Ethernet, Jitter < 5 ms)"]
+    Orin["Jetson Orin (Master - ROS 2)\n• Manual Kalman Filter (50 Hz)\n• ORB-SAM-E Deep SLAM\n• Theta* Planner & Nav"]
 
-    subgraph Network_Transport["Deterministic Transport Layer"]
-        direction TB
-        T1["CycloneDDS (Unicast Peer, Multicast Disabled)"]
-        T2["Point-to-Point Gigabit Ethernet"]
-        T3["Chrony PTP Time Synchronization (Jitter < 5 ms)"]
-    end
-
-    subgraph Master_Node["Jetson Orin (Master Node - Native ROS 2 Humble)"]
-        direction TB
-        O1["Manual Kalman Filter Node (ekf_manual_node)"]
-        O2["Deep Visual SLAM: ORB-SAM-E (EfficientSAM3 + CUDA)"]
-        O3["SLAM Toolbox / Cartographer Localization"]
-        O4["Theta* / RRT Path Planner & Trajectory Control"]
-        O5["Cooperative TF Publisher & UAV Mission Bridge"]
-    end
-
-    Slave_Node -- "Raw Sensor Streams" --> Network_Transport
-    Network_Transport -- "Synchronized Topics" --> Master_Node
-    Master_Node -- "Actuation Commands (/cmd_vel)" --> Network_Transport
-    Network_Transport -- "Deterministic Motor Packets" --> Slave_Node
+    Nano -- "Raw Sensors" --> Transport
+    Transport -- "Synchronized Topics" --> Orin
+    Orin -- "/cmd_vel" --> Transport
+    Transport -- "Motor Actuation" --> Nano
 ```
 
 ---
@@ -189,20 +155,10 @@ where $\mathbf{C} = \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & 1 
 
 ```mermaid
 flowchart LR
-    subgraph Prediction_Loop["Continuous Prediction Loop (50 Hz)"]
-        U["Wheel Odometry [vx, vy] & IMU [wz]"] --> INT["Continuous State & Covariance Integration\ndx/dt = f(x, u),  dP/dt = A*P + P*A^T + Q"]
-        INT --> INT
-    end
-
-    subgraph Correction_Loop["Asynchronous Discrete Correction (15 Hz)"]
-        OBS["Global Observation zk [x, y, theta]\n(OptiTrack NatNet / AMCL / ArUco)"] --> OUTLIER{"Mahalanobis\nOutlier Gate"}
-        OUTLIER -- Pass --> GAIN["Kalman Gain: L = P * C^T * (C*P*C^T + R)^-1"]
-        GAIN --> UPD["State Update: x = x + L*(z - C*x)\nCovariance Update: P = (I - L*C)*P"]
-        OUTLIER -- Reject --> DROP["Discard Spurious Measurement"]
-    end
-
-    INT --> GAIN
-    UPD --> INT
+    Sensors["Odometry & IMU\n(50 Hz)"] --> Pred["Continuous Prediction\nState & Covariance"]
+    Pred --> Upd["Discrete Update\n(15 Hz)"]
+    Obs["Global Observation\n(OptiTrack / AMCL / ArUco)"] --> Upd
+    Upd --> State["Filtered Robot Pose\n[x, y, theta, b_omega]"]
 ```
 
 ### Quantitative Drift Mitigation
@@ -253,14 +209,11 @@ The aerial subsystem is powered by [`demo_tello_sim`](https://github.com/opyntor
 The UAV executes a systematic lawnmower survey over the seaport arena, capturing 16 overlapping nadir photographs. The images are processed through a 3-phase stitching engine:
 
 ```mermaid
-flowchart TD
-    P1["16 Nadir Images + UAV Pose Estimates"] --> PhaseA["Phase A: Pose-Based Seeding\nTiles positioned according to coarse (x, y, yaw) flight coordinates"]
-    PhaseA --> PhaseB["Phase B: FFT Phase Correlation\nCanny edge detection + Spectral Phase Correlation\nResolves inter-tile pixel translations with sub-pixel precision"]
-    PhaseB --> PhaseC["Phase C: Global Non-Linear Optimization\nL-BFGS minimization over seam graph + Multiband Blending\nEliminates vignetting, seam lines, and optical distortion"]
-    PhaseC --> OUT1["High-Resolution Seaport Orthomosaic (500 px/m)"]
-    OUT1 --> OUT2["Binary Occupancy Grid (.pgm / .yaml)\n96.8% agreement with physical arena boundaries"]
-    OUT1 --> OUT3["Sub-Pixel ArUco Detection\nLocates Robot (ID 4) & Unloading Goal (ID 0)"]
-    OUT3 --> TF["Dynamic TF Broadcaster: map -> map_dron_origin -> meta_aruco"]
+flowchart LR
+    Photos["16 Aerial Photos"] --> Stitch["3-Phase Stitching\n(Pose + FFT + L-BFGS)"]
+    Stitch --> Map["Occupancy Grid\n(500 px/m)"]
+    Stitch --> ArUco["ArUco Detection\n(Robot & Goal)"]
+    ArUco --> TF["TF: map to meta_aruco"]
 ```
 
 - **Computational Performance**: Implemented in C++ using OpenCV and Eigen (`stitch_pose_cpp`), achieving a **2.7x speedup** over the pure Python baseline (17 seconds vs. 45 seconds).
@@ -284,9 +237,9 @@ The workspace is engineered around an architectural contract where simulation an
 
 ```mermaid
 flowchart LR
-    T1["Tier 1: Python Prototype\nKinematic modeling & Kalman-Bucy derivation"] --> T2["Tier 2: Gazebo Fortress\nSDF world, ros_gz_bridge, lidar clipping, TF pipeline"]
-    T2 --> T3["Tier 3: NVIDIA Isaac Sim 4.5\nPhysX contact mechanics, 40-roller mecanum slip, RTX ray tracing"]
-    T3 --> T4["Tier 4: Physical Hardware\nJetAuto 4WD, DJI Tello, Jetson Orin + Nano, OptiTrack NatNet"]
+    T1["1. Python Prototype\nKinematic derivation"] --> T2["2. Gazebo Fortress\nSDF world & ros_gz_bridge"]
+    T2 --> T3["3. Isaac Sim 4.5\nPhysX 40-roller slip"]
+    T3 --> T4["4. Real Hardware\nJetAuto, Tello, Dual Jetson"]
 ```
 
 ### Architectural Parity
